@@ -78,6 +78,13 @@ class SaveDataOptionEnum(str, Enum):
     POSTGRES = "postgres"
 
 
+class OpinionMatchEnum(str, Enum):
+    """Keyword matching rule for the Douyin opinion report."""
+
+    ALL = "all"
+    ANY = "any"
+
+
 class InitDbOptionEnum(str, Enum):
     """Database initialization option"""
 
@@ -299,6 +306,41 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Storage Configuration",
             ),
         ] = config.SAVE_DATA_PATH,
+        douyin_opinion_report: Annotated[
+            str,
+            typer.Option(
+                "--douyin_opinion_report",
+                help="Create the compact four-column Douyin opinion report (yes/no)",
+                rich_help_panel="Douyin Opinion Monitor",
+                show_default=True,
+            ),
+        ] = str(config.ENABLE_DOUYIN_OPINION_REPORT),
+        opinion_date: Annotated[
+            str,
+            typer.Option(
+                "--opinion_date",
+                help="Report date in China time (YYYY-MM-DD; blank means today)",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = config.DOUYIN_OPINION_REPORT_DATE,
+        opinion_output: Annotated[
+            str,
+            typer.Option(
+                "--opinion_output",
+                help="Output .xlsx path for the Douyin opinion report",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = config.DOUYIN_OPINION_REPORT_OUTPUT,
+        opinion_match: Annotated[
+            OpinionMatchEnum,
+            typer.Option(
+                "--opinion_match",
+                help="Keyword rule: all (every keyword) or any (one keyword)",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = _coerce_enum(
+            OpinionMatchEnum, config.DOUYIN_OPINION_MATCH, OpinionMatchEnum.ALL
+        ),
         enable_ip_proxy: Annotated[
             str,
             typer.Option(
@@ -338,8 +380,20 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         enable_comment = _to_bool(get_comment)
         enable_sub_comment = _to_bool(get_sub_comment)
         enable_headless = _to_bool(headless)
+        enable_douyin_opinion_report = _to_bool(douyin_opinion_report)
         enable_ip_proxy_value = _to_bool(enable_ip_proxy)
         init_db_value = init_db.value if init_db else None
+
+        if enable_douyin_opinion_report and platform != PlatformEnum.DOUYIN:
+            raise typer.BadParameter(
+                "Douyin opinion report requires --platform dy",
+                param_hint="--douyin_opinion_report",
+            )
+        if enable_douyin_opinion_report and crawler_type != CrawlerTypeEnum.SEARCH:
+            raise typer.BadParameter(
+                "Douyin opinion report requires --type search",
+                param_hint="--douyin_opinion_report",
+            )
 
         # Parse specified_id and creator_id into lists
         specified_id_list = [id.strip() for id in specified_id.split(",") if id.strip()] if specified_id else []
@@ -361,6 +415,10 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.CRAWLER_MAX_NOTES_COUNT = crawler_max_notes_count
         config.MAX_CONCURRENCY_NUM = max_concurrency_num
         config.SAVE_DATA_PATH = save_data_path
+        config.ENABLE_DOUYIN_OPINION_REPORT = enable_douyin_opinion_report
+        config.DOUYIN_OPINION_REPORT_DATE = opinion_date
+        config.DOUYIN_OPINION_REPORT_OUTPUT = opinion_output
+        config.DOUYIN_OPINION_MATCH = opinion_match.value
         config.ENABLE_IP_PROXY = enable_ip_proxy_value
         config.IP_PROXY_POOL_COUNT = ip_proxy_pool_count
         config.IP_PROXY_PROVIDER_NAME = ip_proxy_provider_name
@@ -411,6 +469,10 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
             get_sub_comment=config.ENABLE_GET_SUB_COMMENTS,
             headless=config.HEADLESS,
             save_data_option=config.SAVE_DATA_OPTION,
+            douyin_opinion_report=config.ENABLE_DOUYIN_OPINION_REPORT,
+            opinion_date=config.DOUYIN_OPINION_REPORT_DATE,
+            opinion_output=config.DOUYIN_OPINION_REPORT_OUTPUT,
+            opinion_match=config.DOUYIN_OPINION_MATCH,
             init_db=init_db_value,
             cookies=config.COOKIES,
             specified_id=specified_id,

@@ -92,6 +92,14 @@ SAVE_DATA_OPTION = "jsonl"  # csv or db or json or jsonl or sqlite or excel or p
 # Data saving path, if not specified by default, it will be saved to the data folder.
 SAVE_DATA_PATH = ""
 
+# ==================== Douyin opinion-monitor report ====================
+# This mode creates one review-oriented workbook instead of the standard raw
+# multi-sheet export. It is intended for small, authorized, date-bounded work.
+ENABLE_DOUYIN_OPINION_REPORT = False
+DOUYIN_OPINION_REPORT_DATE = ""  # YYYY-MM-DD, blank uses the current China date
+DOUYIN_OPINION_REPORT_OUTPUT = ""  # blank uses <M.DD>抖音舆论检测.xlsx
+DOUYIN_OPINION_MATCH = "all"  # all = every keyword must appear; any = one is enough
+
 # Browser file configuration cached by the user's browser
 USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name
 

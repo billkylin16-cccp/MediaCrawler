@@ -279,6 +279,32 @@ python main.py --help
 </details>
 
 
+## 🧭 抖音舆情监测报表（Fork 自定义功能）
+
+本 Fork 增加了一个面向小规模、已获授权监测的抖音汇总报表。它会在正常的抖音登录会话中搜索关键词，只保留中国时区指定日期内发布、且满足关键词匹配规则的视频；再汇总这些视频下同日加载到的评论。报表模块位于抖音存储层，不会改变项目原有的 JSON、数据库或通用 Excel 导出。
+
+生成的单页 Excel 标题为 `8.24抖音舆论检测`（根据 `--opinion_date` 自动变化），从左到右包含：序号、账号名称（发布人名称）、发布内容、关键信息。
+
+```powershell
+# 首次使用：安装依赖（该命令行报表无需运行 npm install）
+uv sync
+
+# 生成 2026-08-24 的“武陟、西陶”舆情监测表
+powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24
+
+# 可选：同时加载二级回复，并在授权范围内调整检索上限
+powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24 -IncludeReplies -MaxVideos 100 -MaxCommentsPerVideo 200
+```
+
+- 脚本默认 `-Match all`，表示视频内容需同时包含所有关键词；使用 `-Match any` 可改为命中任一关键词。
+- 脚本默认只汇总一级评论；添加 `-IncludeReplies` 后也会处理当前会话返回的二级回复。
+- 报表中的账号名称来自平台公开展示名，是完成指定表头所需的本地特例；请妥善保管，不要用于骚扰、画像或不当传播。
+- `MaxCommentsPerVideo` 与 `MaxVideos` 是访问上限。报表会汇总上限内平台实际返回的全部匹配项，但完整性仍受平台展示、搜索排序、登录状态和访问限制影响，不能保证覆盖平台上的绝对全集。
+- 为避免误删已有数据，输出文件已存在时脚本会停止而不会覆盖；请先归档旧文件，或使用 `-OutputPath` 指定新文件名。
+- 抖音功能需要 Node.js 16+ 运行 JavaScript 签名代码，但不需要为命令行报表执行 `npm install`；`npm install` 只在使用 WebUI 前端开发流程时需要。
+- 运行前按上方“Chrome 浏览器配置”开启 `chrome://inspect/#remote-debugging`，并在 Chrome 弹出的连接确认框中点击接受。默认 CDP 模式不会复用先前发生冲突的 Playwright 持久化配置目录。
+- 报表仅处理当前正常会话中返回的数据，不会绕过验证、风控或访问限制。请在具备授权并遵守平台规则的前提下使用。
+
 ## 💾 数据保存
 
 MediaCrawler 支持多种数据存储方式，包括 CSV、JSON、JSONL、Excel、SQLite 和 MySQL 数据库。

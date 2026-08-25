@@ -35,6 +35,7 @@ import config
 from base.base_crawler import AbstractCrawler
 from proxy.proxy_ip_pool import IpInfoModel, create_ip_pool
 from store import douyin as douyin_store
+from store.douyin_opinion_report import DouyinOpinionReport
 from tools import utils
 from tools.cdp_browser import CDPBrowserManager
 from var import crawler_type_var, source_keyword_var
@@ -63,8 +64,18 @@ class DouYinCrawler(AbstractCrawler):
         ]
         self.cdp_manager = None
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
+        self.opinion_report: Optional[DouyinOpinionReport] = None
 
     async def start(self) -> None:
+        if config.ENABLE_DOUYIN_OPINION_REPORT:
+            if config.CRAWLER_TYPE != "search":
+                raise ValueError("抖音舆情监测模式仅支持关键词搜索（--type search）")
+            self.opinion_report = DouyinOpinionReport(
+                keywords=config.KEYWORDS.split(","),
+                target_date=config.DOUYIN_OPINION_REPORT_DATE,
+                output_path=config.DOUYIN_OPINION_REPORT_OUTPUT or None,
+                match=config.DOUYIN_OPINION_MATCH,
+            )
         playwright_proxy_format, httpx_proxy_format = None, None
         if config.ENABLE_IP_PROXY:
             self.ip_proxy_pool = await create_ip_pool(config.IP_PROXY_POOL_COUNT, enable_validate_ip=True)
@@ -122,6 +133,13 @@ class DouYinCrawler(AbstractCrawler):
                 # Get the information and comments of the specified creator
                 await self.get_creators_and_videos()
 
+            if self.opinion_report:
+                output_path = self.opinion_report.flush()
+                utils.logger.info(
+                    f"[DouYinCrawler.start] Opinion report saved: {output_path} "
+                    f"(videos={self.opinion_report.video_count}, comments={self.opinion_report.comment_count})"
+                )
+
             utils.logger.info("[DouYinCrawler.start] Douyin Crawler finished ...")
 
     async def search(self) -> None:
@@ -163,14 +181,23 @@ class DouYinCrawler(AbstractCrawler):
                 dy_search_id = posts_res.get("extra", {}).get("logid", "")
                 page_aweme_list = []
                 for post_item in posts_res.get("data"):
-                    try:
-                        aweme_info: Dict = (post_item.get("aweme_info") or post_item.get("aweme_mix_info", {}).get("mix_items")[0])
-                    except TypeError:
+                    if not isinstance(post_item, dict):
                         continue
-                    aweme_list.append(aweme_info.get("aweme_id", ""))
-                    page_aweme_list.append(aweme_info.get("aweme_id", ""))
-                    await douyin_store.update_douyin_aweme(aweme_item=aweme_info)
-                    await self.get_aweme_media(aweme_item=aweme_info)
+                    aweme_info: Optional[Dict] = post_item.get("aweme_info")
+                    if not aweme_info:
+                        mix_items = (post_item.get("aweme_mix_info") or {}).get("mix_items") or []
+                        aweme_info = mix_items[0] if mix_items else None
+                    if not isinstance(aweme_info, dict):
+                        continue
+                    aweme_id = aweme_info.get("aweme_id", "")
+                    aweme_list.append(aweme_id)
+                    if self.opinion_report:
+                        if self.opinion_report.add_video(aweme_info):
+                            page_aweme_list.append(aweme_id)
+                    else:
+                        page_aweme_list.append(aweme_id)
+                        await douyin_store.update_douyin_aweme(aweme_item=aweme_info)
+                        await self.get_aweme_media(aweme_item=aweme_info)
                 
                 # Batch get note comments for the current page
                 await self.batch_get_note_comments(page_aweme_list)
@@ -253,11 +280,16 @@ class DouYinCrawler(AbstractCrawler):
                 # Pass the list of keywords to the get_aweme_all_comments method
                 # Use fixed crawling interval
                 crawl_interval = config.CRAWLER_MAX_SLEEP_SEC
+                callback = (
+                    self.opinion_report.add_comments
+                    if self.opinion_report
+                    else douyin_store.batch_update_dy_aweme_comments
+                )
                 await self.dy_client.get_aweme_all_comments(
                     aweme_id=aweme_id,
                     crawl_interval=crawl_interval,
                     is_fetch_sub_comments=config.ENABLE_GET_SUB_COMMENTS,
-                    callback=douyin_store.batch_update_dy_aweme_comments,
+                    callback=callback,
                     max_count=config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES,
                 )
                 # Sleep after fetching comments
