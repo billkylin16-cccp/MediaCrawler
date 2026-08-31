@@ -285,11 +285,15 @@ python main.py --help
 
 生成的单页 Excel 标题为 `8.24抖音舆论检测`（根据 `--opinion_date` 自动变化），从左到右包含：序号、账号名称（发布人名称）、发布内容、关键信息。
 
+最简单的方式是双击项目根目录下的 `双击运行抖音舆情监测.cmd`。在弹窗中输入关键词后点击“确定”，脚本会自动使用当天日期运行并生成 Excel。多个关键词可使用空格、中文/英文逗号分隔；弹窗默认关键词为 `西陶`。如果当天同名报表已存在，双击启动方式会自动添加关键词或时间后缀，不会覆盖已有文件。
+
+也可以在 PowerShell 中直接运行：
+
 ```powershell
 # 首次使用：安装依赖（该命令行报表无需运行 npm install）
 uv sync
 
-# 生成 2026-08-24 的“武陟、西陶”舆情监测表
+# 生成 2026-08-24 的“西陶”舆情监测表
 powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24
 
 # 可选：只检查本机环境和输出路径，不启动浏览器
@@ -306,7 +310,7 @@ powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2
 - `MaxCommentsPerVideo` 与 `MaxVideos` 是访问上限。报表会汇总上限内平台实际返回的全部匹配项，但完整性仍受平台展示、搜索排序、登录状态和访问限制影响，不能保证覆盖平台上的绝对全集。
 - 为避免误删已有数据，输出文件已存在时脚本会停止而不会覆盖；请先归档旧文件，或使用 `-OutputPath` 指定新文件名。
 - 抖音功能需要 Node.js 16+ 运行 JavaScript 签名代码，但不需要为命令行报表执行 `npm install`；`npm install` 只在使用 WebUI 前端开发流程时需要。
-- 运行前按上方“Chrome 浏览器配置”开启 `chrome://inspect/#remote-debugging`，并在 Chrome 弹出的连接确认框中点击接受。默认 CDP 模式不会复用先前发生冲突的 Playwright 持久化配置目录。
+- 只有添加 `-UseExistingChrome` 时，才需要按上方“Chrome 浏览器配置”开启 `chrome://inspect/#remote-debugging`，并在 Chrome 弹出的连接确认框中点击接受。
 - 报表仅处理当前正常会话中返回的数据，不会绕过验证、风控或访问限制。请在具备授权并遵守平台规则的前提下使用。
 
 ## 💾 数据保存

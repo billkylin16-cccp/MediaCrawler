@@ -5,7 +5,7 @@
 [CmdletBinding()]
 param(
     [string]$OpinionDate = (Get-Date).ToString("yyyy-MM-dd"),
-    [string]$Keywords = (([char]0x6B66).ToString() + ([char]0x965F) + "," + ([char]0x897F) + ([char]0x9676)),
+    [string]$Keywords = (([char]0x897F).ToString() + ([char]0x9676)),
     [ValidateSet("all", "any")]
     [string]$Match = "all",
     [string]$OutputPath = "",
@@ -15,11 +15,82 @@ param(
     [int]$MaxCommentsPerVideo = 200,
     [switch]$IncludeReplies,
     [switch]$UseExistingChrome,
+    [switch]$PromptKeywords,
     [switch]$CheckOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$outputPathWasSpecified = $PSBoundParameters.ContainsKey("OutputPath")
+
+if ($PromptKeywords) {
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $dialogTitle = -join @(
+        [char]0x6296,
+        [char]0x97F3,
+        [char]0x8206,
+        [char]0x60C5,
+        [char]0x76D1,
+        [char]0x6D4B
+    )
+    $dialogMessage = -join @(
+        [char]0x8BF7,
+        [char]0x8F93,
+        [char]0x5165,
+        [char]0x641C,
+        [char]0x7D22,
+        [char]0x5173,
+        [char]0x952E,
+        [char]0x8BCD,
+        [char]0xFF0C,
+        [char]0x591A,
+        [char]0x4E2A,
+        [char]0x5173,
+        [char]0x952E,
+        [char]0x8BCD,
+        [char]0x53EF,
+        [char]0x7528,
+        [char]0x7A7A,
+        [char]0x683C,
+        [char]0x6216,
+        [char]0x9017,
+        [char]0x53F7,
+        [char]0x5206,
+        [char]0x9694
+    )
+    $cancelMessage = -join @(
+        [char]0x672A,
+        [char]0x8F93,
+        [char]0x5165,
+        [char]0x5173,
+        [char]0x952E,
+        [char]0x8BCD,
+        [char]0xFF0C,
+        [char]0x5DF2,
+        [char]0x53D6,
+        [char]0x6D88,
+        [char]0x8FD0,
+        [char]0x884C
+    )
+    $enteredKeywords = [Environment]::GetEnvironmentVariable("MEDIACRAWLER_PROMPT_KEYWORDS")
+    if ($null -eq $enteredKeywords) {
+        $enteredKeywords = [Microsoft.VisualBasic.Interaction]::InputBox(
+            $dialogMessage,
+            $dialogTitle,
+            $Keywords
+        )
+    }
+    if ([string]::IsNullOrWhiteSpace($enteredKeywords)) {
+        [void][Microsoft.VisualBasic.Interaction]::MsgBox(
+            $cancelMessage,
+            [Microsoft.VisualBasic.MsgBoxStyle]::Information,
+            $dialogTitle
+        )
+        Write-Host "No keywords entered. Run cancelled."
+        return
+    }
+    $Keywords = $enteredKeywords
+}
 
 try {
     $parsedDate = [DateTime]::ParseExact(
@@ -32,7 +103,11 @@ catch {
     throw "OpinionDate must use YYYY-MM-DD, for example 2026-08-24."
 }
 
-$normalizedKeywords = ($Keywords.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ","
+$Keywords = $Keywords.Replace([char]0xFF0C, ",")
+$Keywords = $Keywords.Replace([char]0x3001, ",")
+$Keywords = $Keywords.Replace([char]0xFF1B, ",")
+$Keywords = $Keywords.Replace(";", ",")
+$normalizedKeywords = (($Keywords -split "[,\s]+") | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ","
 if (-not $normalizedKeywords) {
     throw "Keywords must contain at least one value. Separate values with commas."
 }
@@ -51,6 +126,24 @@ if (-not $OutputPath) {
 }
 elseif (-not [IO.Path]::IsPathRooted($OutputPath)) {
     $OutputPath = Join-Path $PSScriptRoot $OutputPath
+}
+
+if ($PromptKeywords -and -not $outputPathWasSpecified -and (Test-Path -LiteralPath $OutputPath)) {
+    $outputDirectory = [IO.Path]::GetDirectoryName($OutputPath)
+    $outputBaseName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
+    $safeKeywords = ($normalizedKeywords -replace "[^\p{L}\p{N}_-]+", "_").Trim("_")
+    if ($safeKeywords.Length -gt 40) {
+        $safeKeywords = $safeKeywords.Substring(0, 40).Trim("_")
+    }
+    if (-not $safeKeywords) {
+        $safeKeywords = "keywords"
+    }
+
+    $OutputPath = Join-Path $outputDirectory ("{0}-{1}.xlsx" -f $outputBaseName, $safeKeywords)
+    if (Test-Path -LiteralPath $OutputPath) {
+        $timeSuffix = (Get-Date).ToString("HHmmss")
+        $OutputPath = Join-Path $outputDirectory ("{0}-{1}-{2}.xlsx" -f $outputBaseName, $safeKeywords, $timeSuffix)
+    }
 }
 
 if ([IO.Path]::GetExtension($OutputPath) -ne ".xlsx") {

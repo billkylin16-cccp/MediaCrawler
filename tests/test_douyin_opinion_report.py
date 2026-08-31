@@ -16,6 +16,14 @@ def test_windows_powershell_launcher_is_ascii_only():
     assert launcher.read_bytes().isascii()
 
 
+def test_windows_double_click_launcher_is_portable():
+    launcher = Path(__file__).parents[1] / "双击运行抖音舆情监测.cmd"
+    content = launcher.read_bytes()
+    assert content.isascii()
+    assert b'%~dp0run_douyin_opinion.ps1' in content
+    assert b'-PromptKeywords' in content
+
+
 @pytest.mark.asyncio
 async def test_report_filters_and_writes_requested_layout(tmp_path):
     output = tmp_path / "8.24抖音舆论检测.xlsx"
