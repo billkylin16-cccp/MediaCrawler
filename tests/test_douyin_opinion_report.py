@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from openpyxl import load_workbook
 import pytest
@@ -8,6 +9,11 @@ from store.douyin_opinion_report import DouyinOpinionReport
 
 def _ts(hour: int) -> int:
     return int(datetime(2026, 8, 24, hour, tzinfo=timezone.utc).timestamp())
+
+
+def test_windows_powershell_launcher_is_ascii_only():
+    launcher = Path(__file__).parents[1] / "run_douyin_opinion.ps1"
+    assert launcher.read_bytes().isascii()
 
 
 @pytest.mark.asyncio

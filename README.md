@@ -292,6 +292,9 @@ uv sync
 # 生成 2026-08-24 的“武陟、西陶”舆情监测表
 powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24
 
+# 可选：只检查本机环境和输出路径，不启动浏览器
+powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24 -CheckOnly
+
 # 可选：同时加载二级回复，并在授权范围内调整检索上限
 powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24 -IncludeReplies -MaxVideos 100 -MaxCommentsPerVideo 200
 ```
