@@ -301,6 +301,7 @@ powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2
 
 - 脚本默认 `-Match all`，表示视频内容需同时包含所有关键词；使用 `-Match any` 可改为命中任一关键词。
 - 脚本默认只汇总一级评论；添加 `-IncludeReplies` 后也会处理当前会话返回的二级回复。
+- 脚本默认使用已安装的 Playwright Chromium 并保存独立登录状态，避免已有 Chrome 的调试授权超时；如需复用已开启远程调试的 Chrome，可添加 `-UseExistingChrome`。
 - 报表中的账号名称来自平台公开展示名，是完成指定表头所需的本地特例；请妥善保管，不要用于骚扰、画像或不当传播。
 - `MaxCommentsPerVideo` 与 `MaxVideos` 是访问上限。报表会汇总上限内平台实际返回的全部匹配项，但完整性仍受平台展示、搜索排序、登录状态和访问限制影响，不能保证覆盖平台上的绝对全集。
 - 为避免误删已有数据，输出文件已存在时脚本会停止而不会覆盖；请先归档旧文件，或使用 `-OutputPath` 指定新文件名。

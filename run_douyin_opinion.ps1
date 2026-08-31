@@ -14,6 +14,7 @@ param(
     [ValidateRange(1, 5000)]
     [int]$MaxCommentsPerVideo = 200,
     [switch]$IncludeReplies,
+    [switch]$UseExistingChrome,
     [switch]$CheckOnly
 )
 
@@ -76,11 +77,16 @@ if ($nodeVersion.Major -lt 16) {
     throw "Node.js $nodeVersionText is too old. Version 16 or newer is required."
 }
 
+$env:MEDIACRAWLER_ENABLE_CDP_MODE = if ($UseExistingChrome) { "true" } else { "false" }
+$env:MEDIACRAWLER_CDP_CONNECT_EXISTING = if ($UseExistingChrome) { "true" } else { "false" }
+$browserMode = if ($UseExistingChrome) { "existing Chrome (CDP)" } else { "Playwright Chromium" }
+
 if ($CheckOnly) {
     Write-Host "Preflight check passed."
     Write-Host "Node.js: $nodeVersionText"
     Write-Host "uv: $(& $uvCommand.Source --version)"
     Write-Host "Keywords: $normalizedKeywords"
+    Write-Host "Browser mode: $browserMode"
     Write-Host "Output: $OutputPath"
     return
 }
