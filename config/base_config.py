@@ -109,6 +109,7 @@ DOUYIN_OPINION_WATCH_ACCOUNTS = []  # Douyin IDs/profile URLs checked before key
 DOUYIN_OPINION_ENABLE_OCR = True  # OCR text in image-carousel posts
 DOUYIN_OPINION_OCR_MAX_IMAGES = 35
 DOUYIN_OPINION_WATCH_MAX_POSTS = 36  # per account; date filtering stops older pages early
+DOUYIN_OPINION_SCOPE = "all"  # all = keyword search + watchlist; watch_only = watchlist only
 
 # Browser file configuration cached by the user's browser
 USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name

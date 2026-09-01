@@ -31,6 +31,7 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!packaging/pyinstaller/*.spec
 
 # Installer logs
 pip-log.txt
@@ -165,6 +166,15 @@ cython_debug/
 /temp_image/
 /browser_data/
 /data/
+/packaging/.runtime/
+/packaging/.tools/
+/packaging/output/
+/packaging/.self-test-data/
+/packaging/.self-test-report.json
+/packaging/.smoke-data/
+/packaging/.smoke-install/
+/packaging/.smoke-*.log
+/packaging/.pytest-temp/
 
 */.DS_Store
 .vscode

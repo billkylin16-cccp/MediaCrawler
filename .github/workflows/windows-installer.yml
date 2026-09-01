@@ -1,0 +1,68 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Installer version
+        required: true
+        default: 0.2.0-beta.1
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Install dependencies and Chromium
+        shell: powershell
+        run: |
+          uv sync --frozen --group build
+          uv run python -m playwright install chromium
+
+      - name: Test
+        shell: powershell
+        run: uv run pytest -q tests/test_douyin_opinion_app.py tests/test_douyin_watchlist_ocr.py tests/test_douyin_opinion_report.py tests/test_douyin_no_user_info.py tests/test_cmd_arg_douyin_opinion.py
+
+      - name: Build installer
+        shell: powershell
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:REF_NAME.TrimStart("v") } else { $env:RELEASE_VERSION }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\windows\build_release.ps1 -Version $version
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DouyinOpinionMonitor-windows-x64
+          path: |
+            packaging/output/*.exe
+            packaging/output/*.sha256
+
+      - name: Publish tagged release
+        if: github.ref_type == 'tag'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME packaging/output/*.exe packaging/output/*.sha256 --generate-notes --verify-tag

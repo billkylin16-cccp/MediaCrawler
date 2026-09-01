@@ -18,11 +18,10 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 import asyncio
+import importlib
 import json
-import os
 import random
 from asyncio import Task
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from playwright.async_api import (
@@ -35,12 +34,12 @@ from playwright.async_api import (
 
 import config
 from base.base_crawler import AbstractCrawler
-from proxy.proxy_ip_pool import IpInfoModel, create_ip_pool
-from store import douyin as douyin_store
 from store.douyin_opinion_report import DouyinOpinionReport
 from tools import utils
 from tools.cdp_browser import CDPBrowserManager
 from tools.douyin_image_ocr import DouyinImageOcr
+from tools.douyin_media import extract_note_image_list, extract_video_download_url
+from tools.runtime_paths import browser_data_dir
 from tools.douyin_watchlist import (
     choose_exact_user,
     iter_user_candidates,
@@ -75,7 +74,13 @@ class DouYinCrawler(AbstractCrawler):
         self.opinion_report: Optional[DouyinOpinionReport] = None
         self.image_ocr: Optional[DouyinImageOcr] = None
         self._processed_opinion_awemes: set[str] = set()
-        self._watch_account_cache_path = Path("browser_data") / "douyin_watch_accounts.json"
+        self._watch_account_cache_path = browser_data_dir() / "douyin_watch_accounts.json"
+
+    @staticmethod
+    def _standard_store():
+        """Load the full multi-backend store only outside opinion-report mode."""
+
+        return importlib.import_module("store.douyin")
 
     async def start(self) -> None:
         if config.ENABLE_DOUYIN_OPINION_REPORT:
@@ -93,8 +98,12 @@ class DouYinCrawler(AbstractCrawler):
                 )
         playwright_proxy_format, httpx_proxy_format = None, None
         if config.ENABLE_IP_PROXY:
-            self.ip_proxy_pool = await create_ip_pool(config.IP_PROXY_POOL_COUNT, enable_validate_ip=True)
-            ip_proxy_info: IpInfoModel = await self.ip_proxy_pool.get_proxy()
+            proxy_pool = importlib.import_module("proxy.proxy_ip_pool")
+            self.ip_proxy_pool = await proxy_pool.create_ip_pool(
+                config.IP_PROXY_POOL_COUNT,
+                enable_validate_ip=True,
+            )
+            ip_proxy_info = await self.ip_proxy_pool.get_proxy()
             playwright_proxy_format, httpx_proxy_format = utils.format_proxy_info(ip_proxy_info)
 
         async with async_playwright() as playwright:
@@ -142,7 +151,8 @@ class DouYinCrawler(AbstractCrawler):
                 # Search for notes and retrieve their comment information.
                 if self.opinion_report and config.DOUYIN_OPINION_WATCH_ACCOUNTS:
                     await self.scan_watch_accounts()
-                await self.search()
+                if config.DOUYIN_OPINION_SCOPE != "watch_only":
+                    await self.search()
             elif config.CRAWLER_TYPE == "detail":
                 # Get the information and comments of the specified post
                 await self.get_specified_awemes()
@@ -213,7 +223,7 @@ class DouYinCrawler(AbstractCrawler):
                             page_aweme_list.append(aweme_id)
                     else:
                         page_aweme_list.append(aweme_id)
-                        await douyin_store.update_douyin_aweme(aweme_item=aweme_info)
+                        await self._standard_store().update_douyin_aweme(aweme_item=aweme_info)
                         await self.get_aweme_media(aweme_item=aweme_info)
                 
                 # Batch get note comments for the current page
@@ -326,14 +336,14 @@ class DouYinCrawler(AbstractCrawler):
             return False
 
         detail = aweme_info
-        image_urls = douyin_store._extract_note_image_list(detail)
+        image_urls = extract_note_image_list(detail)
         is_image_post = bool(image_urls) or str(detail.get("aweme_type")) == "68"
         if self.image_ocr and is_image_post and not image_urls:
             try:
                 fetched_detail = await self.dy_client.get_video_by_id(aweme_id)
                 if fetched_detail:
                     detail = fetched_detail
-                    image_urls = douyin_store._extract_note_image_list(detail)
+                    image_urls = extract_note_image_list(detail)
             except DataFetchError as exc:
                 utils.logger.warning(
                     f"[DouYinCrawler] Unable to load image-post detail {aweme_id}: {exc}"
@@ -452,7 +462,7 @@ class DouYinCrawler(AbstractCrawler):
         aweme_details = await asyncio.gather(*task_list)
         for aweme_detail in aweme_details:
             if aweme_detail is not None:
-                await douyin_store.update_douyin_aweme(aweme_item=aweme_detail)
+                await self._standard_store().update_douyin_aweme(aweme_item=aweme_detail)
                 await self.get_aweme_media(aweme_item=aweme_detail)
         await self.batch_get_note_comments(aweme_id_list)
 
@@ -497,7 +507,7 @@ class DouYinCrawler(AbstractCrawler):
                 callback = (
                     self.opinion_report.add_comments
                     if self.opinion_report
-                    else douyin_store.batch_update_dy_aweme_comments
+                    else self._standard_store().batch_update_dy_aweme_comments
                 )
                 await self.dy_client.get_aweme_all_comments(
                     aweme_id=aweme_id,
@@ -531,7 +541,7 @@ class DouYinCrawler(AbstractCrawler):
 
             creator_info: Dict = await self.dy_client.get_user_info(user_id)
             if creator_info:
-                await douyin_store.save_creator(user_id, creator=creator_info)
+                await self._standard_store().save_creator(user_id, creator=creator_info)
 
             # Get all video information of the creator
             all_video_list = await self.dy_client.get_all_user_aweme_posts(sec_user_id=user_id, callback=self.fetch_creator_video_detail)
@@ -549,7 +559,7 @@ class DouYinCrawler(AbstractCrawler):
         note_details = await asyncio.gather(*task_list)
         for aweme_item in note_details:
             if aweme_item is not None:
-                await douyin_store.update_douyin_aweme(aweme_item=aweme_item)
+                await self._standard_store().update_douyin_aweme(aweme_item=aweme_item)
                 await self.get_aweme_media(aweme_item=aweme_item)
 
     async def create_douyin_client(self, httpx_proxy: Optional[str]) -> DouYinClient:
@@ -583,7 +593,7 @@ class DouYinCrawler(AbstractCrawler):
     ) -> BrowserContext:
         """Launch browser and create browser context"""
         if config.SAVE_LOGIN_STATE:
-            user_data_dir = os.path.join(os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM)  # type: ignore
+            user_data_dir = str(browser_data_dir() / (config.USER_DATA_DIR % config.PLATFORM))  # type: ignore
             browser_context = await chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 accept_downloads=True,
@@ -656,9 +666,9 @@ class DouYinCrawler(AbstractCrawler):
             utils.logger.info(f"[DouYinCrawler.get_aweme_media] Crawling image mode is not enabled")
             return
         # List of note urls. If it is a short video type, an empty list will be returned.
-        note_download_url: List[str] = douyin_store._extract_note_image_list(aweme_item)
+        note_download_url: List[str] = extract_note_image_list(aweme_item)
         # The video URL will always exist, but when it is a short video type, the file is actually an audio file.
-        video_download_url: str = douyin_store._extract_video_download_url(aweme_item)
+        video_download_url: str = extract_video_download_url(aweme_item)
         # TODO: Douyin does not adopt the audio and video separation strategy, so the audio can be separated from the original video and will not be extracted for the time being.
         if note_download_url:
             await self.get_aweme_images(aweme_item)
@@ -676,7 +686,7 @@ class DouYinCrawler(AbstractCrawler):
             return
         aweme_id = aweme_item.get("aweme_id")
         # List of note urls. If it is a short video type, an empty list will be returned.
-        note_download_url: List[str] = douyin_store._extract_note_image_list(aweme_item)
+        note_download_url: List[str] = extract_note_image_list(aweme_item)
 
         if not note_download_url:
             return
@@ -690,7 +700,7 @@ class DouYinCrawler(AbstractCrawler):
                 continue
             extension_file_name = f"{picNum:>03d}.jpeg"
             picNum += 1
-            await douyin_store.update_dy_aweme_image(aweme_id, content, extension_file_name)
+            await self._standard_store().update_dy_aweme_image(aweme_id, content, extension_file_name)
 
     async def get_aweme_video(self, aweme_item: Dict):
         """
@@ -704,7 +714,7 @@ class DouYinCrawler(AbstractCrawler):
         aweme_id = aweme_item.get("aweme_id")
 
         # The video URL will always exist, but when it is a short video type, the file is actually an audio file.
-        video_download_url: str = douyin_store._extract_video_download_url(aweme_item)
+        video_download_url: str = extract_video_download_url(aweme_item)
 
         if not video_download_url:
             return
@@ -713,4 +723,4 @@ class DouYinCrawler(AbstractCrawler):
         if content is None:
             return
         extension_file_name = f"video.mp4"
-        await douyin_store.update_dy_aweme_video(aweme_id, content, extension_file_name)
+        await self._standard_store().update_dy_aweme_video(aweme_id, content, extension_file_name)

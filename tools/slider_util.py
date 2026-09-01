@@ -30,6 +30,8 @@ import cv2
 import httpx
 import numpy as np
 
+from tools.runtime_paths import temp_image_dir
+
 
 class Slide:
     """
@@ -41,9 +43,7 @@ class Slide:
         :param gap: Gap image path or url
         :param bg: Background image with gap path or url
         """
-        self.img_dir = os.path.join(os.getcwd(), 'temp_image')
-        if not os.path.exists(self.img_dir):
-            os.makedirs(self.img_dir)
+        self.img_dir = str(temp_image_dir())
 
         bg_resize = bg_size if bg_size else (340, 212)
         gap_size = gap_size if gap_size else (68, 68)

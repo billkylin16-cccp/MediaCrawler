@@ -291,6 +291,18 @@ python main.py --help
 
 图片轮播会在内存中逐张下载并使用本地 RapidOCR/ONNX Runtime 识别中文文字。关键词匹配范围为“作品描述 + 图片 OCR 文本”，Excel 的“关键信息”会注明命中来源和图片序号，识别文本会写入“发布内容”。首次启用前运行 `uv sync` 安装 OCR 依赖；无需单独安装 Tesseract。
 
+### Windows 一键安装版（Beta）
+
+普通使用者可从本 Fork 的 Releases 页面下载 `DouyinOpinionMonitor-*-win-x64-setup.exe`。安装后双击桌面上的“抖音舆情监测”即可使用，不需要另装 Python、Node.js、uv、Chrome 或 OCR 软件。程序内置独立 Chromium，首次运行会显示非商业学习许可；同意后可填写关键词、日期、监测范围和报表目录，再点击“开始监测”。浏览器出现时按页面提示完成抖音登录，后续会保留登录状态。
+
+- “全站关键词 + 重点账号”会同时执行全站搜索和重点账号复查；“仅重点账号”不会混入全站搜索结果。
+- 重点账号、设置、登录状态和运行日志保存在 `%LOCALAPPDATA%\DouyinOpinionMonitor`，升级安装不会覆盖这些资料。
+- 默认报表保存在“文档\抖音舆情监测”；也可在界面中改为其他目录。
+- 当前安装包为未进行商业代码签名的 Beta，Windows 可能显示 SmartScreen 提示。请只从本仓库 Releases 下载，并用同目录的 `.sha256` 文件核验完整性。
+- 本软件及安装包仍受仓库的 `NON-COMMERCIAL LEARNING LICENSE 1.1` 约束，仅限非商业学习和研究，发布安装包不代表获得商业分发授权。
+
+维护者的构建与验收说明见 [`packaging/windows/README.md`](packaging/windows/README.md)。
+
 也可以在 PowerShell 中直接运行：
 
 ```powershell
