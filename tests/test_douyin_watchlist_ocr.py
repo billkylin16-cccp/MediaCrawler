@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from media_platform.douyin.help import parse_creator_info_from_url
 from tools.douyin_image_ocr import extract_ocr_lines
 from tools.douyin_watchlist import choose_exact_user, public_account_label
 
@@ -29,3 +32,22 @@ def test_choose_exact_user_avoids_similar_account():
     assert chosen is not None
     assert chosen["sec_uid"] == "right"
     assert public_account_label(chosen, "fallback") == "重点账号（xuhaoran888）"
+
+
+def test_default_watchlist_uses_seven_unique_creator_urls():
+    watchlist_path = Path(__file__).resolve().parents[1] / "douyin_watch_accounts.txt"
+    entries = [
+        line.strip()
+        for line in watchlist_path.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert len(entries) == 7
+    assert all(entry.startswith("https://www.douyin.com/user/") for entry in entries)
+
+    sec_user_ids = {
+        parse_creator_info_from_url(entry).sec_user_id
+        for entry in entries
+    }
+    assert len(sec_user_ids) == 7
+    assert all(sec_user_id.startswith("MS4wLjAB") for sec_user_id in sec_user_ids)

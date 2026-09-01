@@ -1,8 +1,15 @@
 # One public Douyin ID or creator profile URL per line.
-xuhaoran888
-29811185454
-61798072653
-79437924225
-tj2828288
-ED21X0
-2119278333
+# xuhaoran888
+https://www.douyin.com/user/MS4wLjABAAAA1ihOPcOlTn-3YtNFjwowNTg14UaYYTU0GZnFfiHpb4Q?from_tab_name=main
+# 29811185454
+https://www.douyin.com/user/MS4wLjABAAAAIb6Q_VAD65R5c7hCfPRpFXz8ggNYQIAfNdPdug_EPCko5D_tmBMDmL8sENOVUKkA?from_tab_name=main
+# 61798072653
+https://www.douyin.com/user/MS4wLjABAAAAViu1uKBDMlfnoZ4y5MARofn2jaRRbM-Aj7TYA8ONROmZzQoT20IEqb8D-BAWf1Mo?from_tab_name=main
+# 79437924225
+https://www.douyin.com/user/MS4wLjABAAAAaHixORWINqP6NuVfFEwWxOA9v9M7e8bhDyILp3c_h4E?from_tab_name=main
+# tj2828288
+https://www.douyin.com/user/MS4wLjABAAAAJNIwc-p41fqg5FwisDSBjTonA4DE1Pv5Mn8gz13WIZANMmMxn_6Z2Hmb4QbzqxN8?from_tab_name=main
+# ED21X0
+https://www.douyin.com/user/MS4wLjABAAAA3YisA5fFXEBxtS65FZ77QOoL0slXsUdCcjP7hBkkjOtLRGyt9qksEPkc-Yh3jtwM?from_tab_name=main
+# 2119278333
+https://www.douyin.com/user/MS4wLjABAAAABw74Bq1y5NovIlBbduEjTsVIIzTf56DHbyMn_w3JF2s?from_tab_name=main
