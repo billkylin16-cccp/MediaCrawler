@@ -124,8 +124,13 @@ class DouYinClient(AbstractApiClient, ProxyRefreshMixin):
         # Check whether the proxy has expired before each request
         await self._refresh_proxy_if_expired()
 
-        async with make_async_client(proxy=self.proxy) as client:
-            response = await client.request(method, url, timeout=self.timeout, **kwargs)
+        try:
+            async with make_async_client(proxy=self.proxy) as client:
+                response = await client.request(method, url, timeout=self.timeout, **kwargs)
+        except httpx.HTTPError as exc:
+            raise DataFetchError(
+                f"{exc.__class__.__name__} while requesting {url}: {exc}"
+            ) from exc
         try:
             if response.text == "" or response.text == "blocked":
                 utils.logger.error(f"request params incrr, response.text: {response.text}")

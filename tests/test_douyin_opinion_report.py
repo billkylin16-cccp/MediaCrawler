@@ -5,6 +5,7 @@ from openpyxl import load_workbook
 import pytest
 
 from store.douyin_opinion_report import DouyinOpinionReport
+from tools.douyin_image_ocr import OcrPageResult
 
 
 def _ts(hour: int) -> int:
@@ -119,3 +120,35 @@ def test_report_any_match_and_invalid_output(tmp_path):
             target_date="2026-08-24",
             output_path=existing,
         )
+
+
+def test_report_matches_carousel_ocr_and_marks_watch_account(tmp_path):
+    output = tmp_path / "ocr-report.xlsx"
+    report = DouyinOpinionReport(
+        keywords=["西陶"],
+        target_date="2026-08-24",
+        output_path=output,
+    )
+    assert report.add_video(
+        {
+            "aweme_id": "image-post-1",
+            "desc": "图片轮播",
+            "create_time": _ts(3),
+            "author": {"nickname": "重点发布人"},
+        },
+        ocr_pages=[
+            OcrPageResult(page=1, text="无关内容", confidence=0.95),
+            OcrPageResult(page=2, text="西陶镇相关信息", confidence=0.91),
+        ],
+        watch_account="重点发布人（xuhaoran888）",
+    )
+    report.flush()
+
+    workbook = load_workbook(output, data_only=True)
+    worksheet = workbook["舆论监测"]
+    assert "【图片OCR】" in worksheet["C3"].value
+    assert "第2张：西陶镇相关信息" in worksheet["C3"].value
+    assert "命中来源：图片OCR第2张" in worksheet["D3"].value
+    assert "重点账号：重点发布人（xuhaoran888）" in worksheet["D3"].value
+    assert worksheet.row_dimensions[3].height > 54
+    workbook.close()

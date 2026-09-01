@@ -13,7 +13,13 @@ param(
     [int]$MaxVideos = 100,
     [ValidateRange(1, 5000)]
     [int]$MaxCommentsPerVideo = 200,
+    [string]$WatchAccountsPath = "",
+    [ValidateRange(1, 100)]
+    [int]$OcrMaxImagesPerPost = 35,
+    [ValidateRange(1, 500)]
+    [int]$MaxWatchPostsPerAccount = 36,
     [switch]$IncludeReplies,
+    [switch]$DisableImageOcr,
     [switch]$UseExistingChrome,
     [switch]$PromptKeywords,
     [switch]$CheckOnly
@@ -103,6 +109,22 @@ catch {
     throw "OpinionDate must use YYYY-MM-DD, for example 2026-08-24."
 }
 
+if (-not $WatchAccountsPath) {
+    $WatchAccountsPath = Join-Path $PSScriptRoot "douyin_watch_accounts.txt"
+}
+elseif (-not [IO.Path]::IsPathRooted($WatchAccountsPath)) {
+    $WatchAccountsPath = Join-Path $PSScriptRoot $WatchAccountsPath
+}
+if (-not (Test-Path -LiteralPath $WatchAccountsPath -PathType Leaf)) {
+    throw "Watch account file was not found: $WatchAccountsPath"
+}
+$watchAccounts = @(
+    Get-Content -LiteralPath $WatchAccountsPath |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -and -not $_.StartsWith("#") }
+)
+$watchAccountArgument = $watchAccounts -join ","
+
 $Keywords = $Keywords.Replace([char]0xFF0C, ",")
 $Keywords = $Keywords.Replace([char]0x3001, ",")
 $Keywords = $Keywords.Replace([char]0xFF1B, ",")
@@ -173,12 +195,15 @@ if ($nodeVersion.Major -lt 16) {
 $env:MEDIACRAWLER_ENABLE_CDP_MODE = if ($UseExistingChrome) { "true" } else { "false" }
 $env:MEDIACRAWLER_CDP_CONNECT_EXISTING = if ($UseExistingChrome) { "true" } else { "false" }
 $browserMode = if ($UseExistingChrome) { "existing Chrome (CDP)" } else { "Playwright Chromium" }
+$ocrOption = if ($DisableImageOcr) { "no" } else { "yes" }
 
 if ($CheckOnly) {
     Write-Host "Preflight check passed."
     Write-Host "Node.js: $nodeVersionText"
     Write-Host "uv: $(& $uvCommand.Source --version)"
     Write-Host "Keywords: $normalizedKeywords"
+    Write-Host "Watch accounts: $($watchAccounts.Count)"
+    Write-Host "Image OCR: $ocrOption"
     Write-Host "Browser mode: $browserMode"
     Write-Host "Output: $OutputPath"
     return
@@ -198,6 +223,10 @@ $arguments = @(
     "--douyin_opinion_report", "yes",
     "--opinion_date", $OpinionDate,
     "--opinion_match", $Match,
+    "--opinion_watch_accounts", $watchAccountArgument,
+    "--opinion_ocr", $ocrOption,
+    "--opinion_ocr_max_images", $OcrMaxImagesPerPost.ToString(),
+    "--opinion_watch_max_posts", $MaxWatchPostsPerAccount.ToString(),
     "--opinion_output", $OutputPath,
     "--get_comment", "yes",
     "--get_sub_comment", $replyOption,

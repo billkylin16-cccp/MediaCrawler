@@ -105,6 +105,10 @@ ENABLE_DOUYIN_OPINION_REPORT = False
 DOUYIN_OPINION_REPORT_DATE = ""  # YYYY-MM-DD, blank uses the current China date
 DOUYIN_OPINION_REPORT_OUTPUT = ""  # blank uses <M.DD>抖音舆论检测.xlsx
 DOUYIN_OPINION_MATCH = "all"  # all = every keyword must appear; any = one is enough
+DOUYIN_OPINION_WATCH_ACCOUNTS = []  # Douyin IDs/profile URLs checked before keyword search
+DOUYIN_OPINION_ENABLE_OCR = True  # OCR text in image-carousel posts
+DOUYIN_OPINION_OCR_MAX_IMAGES = 35
+DOUYIN_OPINION_WATCH_MAX_POSTS = 36  # per account; date filtering stops older pages early
 
 # Browser file configuration cached by the user's browser
 USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name

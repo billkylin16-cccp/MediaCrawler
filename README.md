@@ -287,6 +287,10 @@ python main.py --help
 
 最简单的方式是双击项目根目录下的 `双击运行抖音舆情监测.cmd`。在弹窗中输入关键词后点击“确定”，脚本会自动使用当天日期运行并生成 Excel。多个关键词可使用空格、中文/英文逗号分隔；弹窗默认关键词为 `西陶`。如果当天同名报表已存在，双击启动方式会自动添加关键词或时间后缀，不会覆盖已有文件。
 
+重点账号维护在项目根目录的 `douyin_watch_accounts.txt`，每行填写一个公开抖音号、`sec_uid` 或完整创作者主页链接。运行时会先低频检查这些账号的当天作品，再执行常规关键词搜索；首次精确解析成功后会把稳定账号 ID 缓存在 `browser_data/douyin_watch_accounts.json`。如果普通抖音号无法被平台精确搜索到，请从浏览器复制该账号主页链接替换对应行，脚本不会用相似账号冒充目标账号。
+
+图片轮播会在内存中逐张下载并使用本地 RapidOCR/ONNX Runtime 识别中文文字。关键词匹配范围为“作品描述 + 图片 OCR 文本”，Excel 的“关键信息”会注明命中来源和图片序号，识别文本会写入“发布内容”。首次启用前运行 `uv sync` 安装 OCR 依赖；无需单独安装 Tesseract。
+
 也可以在 PowerShell 中直接运行：
 
 ```powershell
@@ -301,11 +305,15 @@ powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2
 
 # 可选：同时加载二级回复，并在授权范围内调整检索上限
 powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -OpinionDate 2026-08-24 -IncludeReplies -MaxVideos 100 -MaxCommentsPerVideo 200
+
+# 可选：临时关闭图片 OCR，或使用另一份重点账号文件
+powershell -ExecutionPolicy Bypass -File .\run_douyin_opinion.ps1 -DisableImageOcr -WatchAccountsPath .\another-watch-list.txt
 ```
 
 - 脚本默认 `-Match all`，表示视频内容需同时包含所有关键词；使用 `-Match any` 可改为命中任一关键词。
 - 脚本默认只汇总一级评论；添加 `-IncludeReplies` 后也会处理当前会话返回的二级回复。
 - 脚本默认使用已安装的 Playwright Chromium 并保存独立登录状态，避免已有 Chrome 的调试授权超时；如需复用已开启远程调试的 Chrome，可添加 `-UseExistingChrome`。
+- OCR 结果受图片清晰度、艺术字、竖排字和遮挡影响；报表会保留作品链接和 OCR 原文，便于人工复核。
 - 报表中的账号名称来自平台公开展示名，是完成指定表头所需的本地特例；请妥善保管，不要用于骚扰、画像或不当传播。
 - `MaxCommentsPerVideo` 与 `MaxVideos` 是访问上限。报表会汇总上限内平台实际返回的全部匹配项，但完整性仍受平台展示、搜索排序、登录状态和访问限制影响，不能保证覆盖平台上的绝对全集。
 - 为避免误删已有数据，输出文件已存在时脚本会停止而不会覆盖；请先归档旧文件，或使用 `-OutputPath` 指定新文件名。

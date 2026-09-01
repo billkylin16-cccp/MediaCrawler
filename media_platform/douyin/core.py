@@ -18,9 +18,11 @@
 # 使用本代码即表示您同意遵守上述原则和LICENSE中的所有条款。
 
 import asyncio
+import json
 import os
 import random
 from asyncio import Task
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from playwright.async_api import (
@@ -38,11 +40,17 @@ from store import douyin as douyin_store
 from store.douyin_opinion_report import DouyinOpinionReport
 from tools import utils
 from tools.cdp_browser import CDPBrowserManager
+from tools.douyin_image_ocr import DouyinImageOcr
+from tools.douyin_watchlist import (
+    choose_exact_user,
+    iter_user_candidates,
+    public_account_label,
+)
 from var import crawler_type_var, source_keyword_var
 
 from .client import DouYinClient
 from .exception import DataFetchError
-from .field import PublishTimeType
+from .field import PublishTimeType, SearchChannelType
 from .help import parse_video_info_from_url, parse_creator_info_from_url
 from .login import DouYinLogin
 
@@ -65,6 +73,9 @@ class DouYinCrawler(AbstractCrawler):
         self.cdp_manager = None
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
         self.opinion_report: Optional[DouyinOpinionReport] = None
+        self.image_ocr: Optional[DouyinImageOcr] = None
+        self._processed_opinion_awemes: set[str] = set()
+        self._watch_account_cache_path = Path("browser_data") / "douyin_watch_accounts.json"
 
     async def start(self) -> None:
         if config.ENABLE_DOUYIN_OPINION_REPORT:
@@ -76,6 +87,10 @@ class DouYinCrawler(AbstractCrawler):
                 output_path=config.DOUYIN_OPINION_REPORT_OUTPUT or None,
                 match=config.DOUYIN_OPINION_MATCH,
             )
+            if config.DOUYIN_OPINION_ENABLE_OCR:
+                self.image_ocr = DouyinImageOcr(
+                    max_images=config.DOUYIN_OPINION_OCR_MAX_IMAGES
+                )
         playwright_proxy_format, httpx_proxy_format = None, None
         if config.ENABLE_IP_PROXY:
             self.ip_proxy_pool = await create_ip_pool(config.IP_PROXY_POOL_COUNT, enable_validate_ip=True)
@@ -125,6 +140,8 @@ class DouYinCrawler(AbstractCrawler):
             crawler_type_var.set(config.CRAWLER_TYPE)
             if config.CRAWLER_TYPE == "search":
                 # Search for notes and retrieve their comment information.
+                if self.opinion_report and config.DOUYIN_OPINION_WATCH_ACCOUNTS:
+                    await self.scan_watch_accounts()
                 await self.search()
             elif config.CRAWLER_TYPE == "detail":
                 # Get the information and comments of the specified post
@@ -192,7 +209,7 @@ class DouYinCrawler(AbstractCrawler):
                     aweme_id = aweme_info.get("aweme_id", "")
                     aweme_list.append(aweme_id)
                     if self.opinion_report:
-                        if self.opinion_report.add_video(aweme_info):
+                        if await self.process_opinion_aweme(aweme_info):
                             page_aweme_list.append(aweme_id)
                     else:
                         page_aweme_list.append(aweme_id)
@@ -206,6 +223,203 @@ class DouYinCrawler(AbstractCrawler):
                 await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
                 utils.logger.info(f"[DouYinCrawler.search] Sleeping for {config.CRAWLER_MAX_SLEEP_SEC} seconds after page {page-1}")
             utils.logger.info(f"[DouYinCrawler.search] keyword:{keyword}, aweme_list:{aweme_list}")
+
+    def _load_watch_account_cache(self) -> Dict[str, Dict[str, str]]:
+        if not self._watch_account_cache_path.exists():
+            return {}
+        try:
+            data = json.loads(self._watch_account_cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Unable to read watch-account cache: {exc}"
+            )
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_watch_account_cache(self, cache: Dict[str, Dict[str, str]]) -> None:
+        try:
+            self._watch_account_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = self._watch_account_cache_path.with_suffix(".tmp")
+            temporary_path.write_text(
+                json.dumps(cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary_path.replace(self._watch_account_cache_path)
+        except OSError as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Unable to save watch-account cache: {exc}"
+            )
+
+    async def resolve_watch_account(
+        self,
+        requested_account: str,
+        cache: Dict[str, Dict[str, str]],
+    ) -> Optional[Tuple[str, str]]:
+        cached = cache.get(requested_account) or {}
+        cached_sec_uid = str(cached.get("sec_uid") or "").strip()
+        if cached_sec_uid:
+            return cached_sec_uid, str(cached.get("label") or requested_account)
+
+        if requested_account.startswith("MS4wLjAB") or "douyin.com/user/" in requested_account:
+            try:
+                parsed = parse_creator_info_from_url(requested_account)
+                return parsed.sec_user_id, requested_account
+            except ValueError:
+                pass
+
+        search_response = await self.dy_client.search_info_by_keyword(
+            keyword=requested_account,
+            offset=0,
+            search_channel=SearchChannelType.USER,
+        )
+        candidate = choose_exact_user(search_response, requested_account)
+        responses = [search_response]
+        if candidate is None:
+            general_response = await self.dy_client.search_info_by_keyword(
+                keyword=requested_account,
+                offset=0,
+            )
+            responses.append(general_response)
+            candidate = choose_exact_user(general_response, requested_account)
+        if candidate is None:
+            public_candidates: list[str] = []
+            seen_labels: set[str] = set()
+            for response in responses:
+                for user in iter_user_candidates(response):
+                    summary = "/".join(
+                        str(user.get(field) or "").strip()
+                        for field in ("unique_id", "short_id", "nickname")
+                    ).strip("/")
+                    if summary and summary not in seen_labels:
+                        seen_labels.add(summary)
+                        public_candidates.append(summary)
+                    if len(public_candidates) >= 5:
+                        break
+                if len(public_candidates) >= 5:
+                    break
+            utils.logger.warning(
+                f"[DouYinCrawler] No exact user-search match for watch account: "
+                f"{requested_account}; candidates={public_candidates}"
+            )
+            return None
+
+        sec_uid = str(candidate.get("sec_uid") or candidate.get("sec_user_id") or "").strip()
+        if not sec_uid:
+            return None
+        label = public_account_label(candidate, requested_account)
+        cache[requested_account] = {"sec_uid": sec_uid, "label": label}
+        self._save_watch_account_cache(cache)
+        return sec_uid, label
+
+    async def process_opinion_aweme(
+        self,
+        aweme_info: Dict,
+        watch_account: str = "",
+    ) -> bool:
+        if not self.opinion_report:
+            return False
+        aweme_id = str(aweme_info.get("aweme_id") or "").strip()
+        if not aweme_id or aweme_id in self._processed_opinion_awemes:
+            return False
+        self._processed_opinion_awemes.add(aweme_id)
+        if not self.opinion_report.is_target_date(aweme_info):
+            return False
+
+        detail = aweme_info
+        image_urls = douyin_store._extract_note_image_list(detail)
+        is_image_post = bool(image_urls) or str(detail.get("aweme_type")) == "68"
+        if self.image_ocr and is_image_post and not image_urls:
+            try:
+                fetched_detail = await self.dy_client.get_video_by_id(aweme_id)
+                if fetched_detail:
+                    detail = fetched_detail
+                    image_urls = douyin_store._extract_note_image_list(detail)
+            except DataFetchError as exc:
+                utils.logger.warning(
+                    f"[DouYinCrawler] Unable to load image-post detail {aweme_id}: {exc}"
+                )
+
+        ocr_pages = []
+        if self.image_ocr and image_urls:
+            try:
+                ocr_pages = await self.image_ocr.recognize_urls(
+                    image_urls,
+                    self.dy_client.get_aweme_media,
+                )
+                utils.logger.info(
+                    f"[DouYinCrawler] OCR completed for {aweme_id}: "
+                    f"images={len(image_urls)}, text_pages={len(ocr_pages)}"
+                )
+            except Exception as exc:
+                utils.logger.warning(
+                    f"[DouYinCrawler] OCR failed for {aweme_id}; continuing with description: {exc}"
+                )
+
+        return self.opinion_report.add_video(
+            detail,
+            ocr_pages=ocr_pages,
+            watch_account=watch_account,
+        )
+
+    async def scan_watch_accounts(self) -> None:
+        if not self.opinion_report:
+            return
+        cache = self._load_watch_account_cache()
+        utils.logger.info(
+            f"[DouYinCrawler] Begin prioritized account scan: "
+            f"accounts={len(config.DOUYIN_OPINION_WATCH_ACCOUNTS)}"
+        )
+        for requested_account in config.DOUYIN_OPINION_WATCH_ACCOUNTS:
+            try:
+                resolved = await self.resolve_watch_account(requested_account, cache)
+                if not resolved:
+                    continue
+                sec_uid, account_label = resolved
+                utils.logger.info(
+                    f"[DouYinCrawler] Watch account resolved: "
+                    f"{requested_account} -> {account_label}"
+                )
+
+                max_cursor = ""
+                scanned = 0
+                stop_on_older_post = False
+                while scanned < config.DOUYIN_OPINION_WATCH_MAX_POSTS:
+                    response = await self.dy_client.get_user_aweme_posts(sec_uid, max_cursor)
+                    aweme_list = response.get("aweme_list") or []
+                    if not aweme_list:
+                        break
+                    selected_ids: list[str] = []
+                    for aweme_info in aweme_list:
+                        if scanned >= config.DOUYIN_OPINION_WATCH_MAX_POSTS:
+                            break
+                        scanned += 1
+                        publish_date = self.opinion_report.publish_date(aweme_info)
+                        if publish_date and publish_date < self.opinion_report.target_date:
+                            stop_on_older_post = True
+                            break
+                        if publish_date != self.opinion_report.target_date:
+                            continue
+                        if await self.process_opinion_aweme(
+                            aweme_info,
+                            watch_account=account_label,
+                        ):
+                            selected_ids.append(str(aweme_info.get("aweme_id")))
+
+                    await self.batch_get_note_comments(selected_ids)
+                    if stop_on_older_post or not response.get("has_more"):
+                        break
+                    max_cursor = str(response.get("max_cursor") or "")
+                    await asyncio.sleep(config.CRAWLER_MAX_SLEEP_SEC)
+            except DataFetchError as exc:
+                utils.logger.error(
+                    f"[DouYinCrawler] Watch-account scan failed for {requested_account}: {exc}"
+                )
+            except Exception as exc:
+                utils.logger.error(
+                    f"[DouYinCrawler] Unexpected watch-account error for {requested_account}: {exc}"
+                )
+            finally:
+                await asyncio.sleep(min(float(config.CRAWLER_MAX_SLEEP_SEC), 2.0))
 
     async def get_specified_awemes(self):
         """Get the information and comments of the specified post from URLs or IDs"""

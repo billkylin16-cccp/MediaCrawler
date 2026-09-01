@@ -27,6 +27,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from tools.douyin_image_ocr import OcrPageResult
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -40,6 +41,9 @@ class VideoRecord:
     content: str
     created_at: datetime
     keywords: tuple[str, ...]
+    description_keywords: tuple[str, ...]
+    ocr_pages: tuple[OcrPageResult, ...]
+    watch_account: str
 
     @property
     def url(self) -> str:
@@ -151,7 +155,20 @@ class DouyinOpinionReport:
     def _matches(self, hit: tuple[str, ...]) -> bool:
         return len(hit) == len(self.keywords) if self.match == "all" else bool(hit)
 
-    def add_video(self, aweme: Dict[str, Any]) -> bool:
+    def is_target_date(self, aweme: Dict[str, Any]) -> bool:
+        return self.publish_date(aweme) == self.target_date
+
+    @staticmethod
+    def publish_date(aweme: Dict[str, Any]) -> Optional[date]:
+        created_at = _to_china_datetime(aweme.get("create_time"))
+        return created_at.date() if created_at else None
+
+    def add_video(
+        self,
+        aweme: Dict[str, Any],
+        ocr_pages: Iterable[OcrPageResult] = (),
+        watch_account: str = "",
+    ) -> bool:
         """Keep a video only when its text and publish date satisfy the report rule.
 
         The return value tells the caller whether comments for this video should
@@ -162,7 +179,18 @@ class DouyinOpinionReport:
             return False
         created_at = _to_china_datetime(aweme.get("create_time"))
         content = _clean(aweme.get("desc"))
-        hits = self._matched_keywords(content)
+        normalized_ocr_pages = tuple(
+            OcrPageResult(
+                page=page.page,
+                text=_clean(page.text),
+                confidence=page.confidence,
+            )
+            for page in ocr_pages
+            if _clean(page.text)
+        )
+        description_hits = self._matched_keywords(content)
+        combined_text = " ".join([content, *(page.text for page in normalized_ocr_pages)])
+        hits = self._matched_keywords(combined_text)
         if not created_at or created_at.date() != self.target_date or not self._matches(hits):
             return False
         author = aweme.get("author") or {}
@@ -173,6 +201,9 @@ class DouyinOpinionReport:
             content=_excel_safe_text(content) or "（视频未提供文字描述）",
             created_at=created_at,
             keywords=hits,
+            description_keywords=description_hits,
+            ocr_pages=normalized_ocr_pages,
+            watch_account=_excel_safe_text(watch_account),
         )
         return True
 
@@ -212,11 +243,41 @@ class DouyinOpinionReport:
 
         for video in videos:
             matched = "、".join(video.keywords) or "搜索命中"
+            source_parts: list[str] = []
+            if video.description_keywords:
+                source_parts.append("作品描述")
+            ocr_hit_pages = [
+                page.page for page in video.ocr_pages if self._matched_keywords(page.text)
+            ]
+            if ocr_hit_pages:
+                source_parts.append(
+                    "图片OCR第" + "、".join(str(page) for page in ocr_hit_pages) + "张"
+                )
+            if not source_parts:
+                source_parts.append("搜索命中")
+
+            content_parts = [video.content]
+            if video.ocr_pages:
+                ocr_text = "｜".join(
+                    f"第{page.page}张：{page.text[:1000]}" for page in video.ocr_pages
+                )
+                content_parts.append(f"【图片OCR】{ocr_text[:12000]}")
+            content = "\n".join(content_parts)
+
+            info_parts = [
+                "视频",
+                f"发布时间：{self._time_text(video.created_at)}",
+                f"匹配：{matched}",
+                f"命中来源：{'、'.join(source_parts)}",
+            ]
+            if video.watch_account:
+                info_parts.append(f"重点账号：{video.watch_account}")
+            info_parts.append(f"链接：{video.url}")
             rows.append([
                 None,
                 video.account,
-                video.content,
-                f"视频｜发布时间：{self._time_text(video.created_at)}｜匹配：{matched}｜链接：{video.url}",
+                content,
+                "｜".join(info_parts),
             ])
             for comment in sorted(comments_by_video.get(video.aweme_id, []), key=lambda item: (item.created_at, item.comment_id)):
                 matched = "、".join(comment.keywords) or "关联视频"
@@ -268,7 +329,12 @@ class DouyinOpinionReport:
                 cell.font = Font(name="Microsoft YaHei", size=10)
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
                 cell.border = thin_border
-            worksheet.row_dimensions[row_number].height = 54
+            estimated_lines = max(
+                4,
+                (len(str(values[2] or "")) // 42) + 1,
+                (len(str(values[3] or "")) // 48) + 1,
+            )
+            worksheet.row_dimensions[row_number].height = min(300, estimated_lines * 15)
 
         for column, width in {"A": 9, "B": 24, "C": 68, "D": 72}.items():
             worksheet.column_dimensions[column].width = width

@@ -341,6 +341,43 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         ] = _coerce_enum(
             OpinionMatchEnum, config.DOUYIN_OPINION_MATCH, OpinionMatchEnum.ALL
         ),
+        opinion_watch_accounts: Annotated[
+            str,
+            typer.Option(
+                "--opinion_watch_accounts",
+                help="Public Douyin IDs/profile URLs to prioritize, separated by commas",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = ",".join(config.DOUYIN_OPINION_WATCH_ACCOUNTS),
+        opinion_ocr: Annotated[
+            str,
+            typer.Option(
+                "--opinion_ocr",
+                help="OCR image-carousel text before keyword matching (yes/no)",
+                rich_help_panel="Douyin Opinion Monitor",
+                show_default=True,
+            ),
+        ] = str(config.DOUYIN_OPINION_ENABLE_OCR),
+        opinion_ocr_max_images: Annotated[
+            int,
+            typer.Option(
+                "--opinion_ocr_max_images",
+                min=1,
+                max=100,
+                help="Maximum carousel images to OCR per post",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = config.DOUYIN_OPINION_OCR_MAX_IMAGES,
+        opinion_watch_max_posts: Annotated[
+            int,
+            typer.Option(
+                "--opinion_watch_max_posts",
+                min=1,
+                max=500,
+                help="Maximum recent posts checked per prioritized account",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = config.DOUYIN_OPINION_WATCH_MAX_POSTS,
         enable_ip_proxy: Annotated[
             str,
             typer.Option(
@@ -381,6 +418,7 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         enable_sub_comment = _to_bool(get_sub_comment)
         enable_headless = _to_bool(headless)
         enable_douyin_opinion_report = _to_bool(douyin_opinion_report)
+        enable_douyin_opinion_ocr = _to_bool(opinion_ocr)
         enable_ip_proxy_value = _to_bool(enable_ip_proxy)
         init_db_value = init_db.value if init_db else None
 
@@ -398,6 +436,9 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         # Parse specified_id and creator_id into lists
         specified_id_list = [id.strip() for id in specified_id.split(",") if id.strip()] if specified_id else []
         creator_id_list = [id.strip() for id in creator_id.split(",") if id.strip()] if creator_id else []
+        opinion_watch_account_list = [
+            item.strip() for item in opinion_watch_accounts.split(",") if item.strip()
+        ] if opinion_watch_accounts else []
 
         # override global config
         config.PLATFORM = platform.value
@@ -419,6 +460,10 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.DOUYIN_OPINION_REPORT_DATE = opinion_date
         config.DOUYIN_OPINION_REPORT_OUTPUT = opinion_output
         config.DOUYIN_OPINION_MATCH = opinion_match.value
+        config.DOUYIN_OPINION_WATCH_ACCOUNTS = opinion_watch_account_list
+        config.DOUYIN_OPINION_ENABLE_OCR = enable_douyin_opinion_ocr
+        config.DOUYIN_OPINION_OCR_MAX_IMAGES = opinion_ocr_max_images
+        config.DOUYIN_OPINION_WATCH_MAX_POSTS = opinion_watch_max_posts
         config.ENABLE_IP_PROXY = enable_ip_proxy_value
         config.IP_PROXY_POOL_COUNT = ip_proxy_pool_count
         config.IP_PROXY_PROVIDER_NAME = ip_proxy_provider_name
@@ -473,6 +518,10 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
             opinion_date=config.DOUYIN_OPINION_REPORT_DATE,
             opinion_output=config.DOUYIN_OPINION_REPORT_OUTPUT,
             opinion_match=config.DOUYIN_OPINION_MATCH,
+            opinion_watch_accounts=config.DOUYIN_OPINION_WATCH_ACCOUNTS,
+            opinion_ocr=config.DOUYIN_OPINION_ENABLE_OCR,
+            opinion_ocr_max_images=config.DOUYIN_OPINION_OCR_MAX_IMAGES,
+            opinion_watch_max_posts=config.DOUYIN_OPINION_WATCH_MAX_POSTS,
             init_db=init_db_value,
             cookies=config.COOKIES,
             specified_id=specified_id,
