@@ -152,3 +152,38 @@ def test_report_matches_carousel_ocr_and_marks_watch_account(tmp_path):
     assert "重点账号：重点发布人（xuhaoran888）" in worksheet["D3"].value
     assert worksheet.row_dimensions[3].height > 54
     workbook.close()
+
+
+def test_report_marks_video_frame_ocr_and_supplemental_source(tmp_path):
+    output = tmp_path / "video-ocr-report.xlsx"
+    report = DouyinOpinionReport(
+        keywords=["西陶村"],
+        target_date="2026-08-24",
+        output_path=output,
+    )
+    assert report.add_video(
+        {
+            "aweme_id": "video-post-1",
+            "desc": "",
+            "create_time": _ts(3),
+            "author": {"nickname": "强强联手"},
+        },
+        ocr_pages=[
+            OcrPageResult(
+                page=2,
+                text="西陶村相关画面",
+                confidence=0.93,
+                source="video",
+            ),
+        ],
+        discovery_source="指定链接补漏",
+    )
+    report.flush()
+
+    workbook = load_workbook(output, data_only=True)
+    worksheet = workbook["舆论监测"]
+    assert "【视频抽帧OCR】" in worksheet["C3"].value
+    assert "第2帧：西陶村相关画面" in worksheet["C3"].value
+    assert "命中来源：视频OCR第2帧" in worksheet["D3"].value
+    assert "发现方式：指定链接补漏" in worksheet["D3"].value
+    workbook.close()

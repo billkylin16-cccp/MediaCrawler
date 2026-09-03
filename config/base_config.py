@@ -106,8 +106,10 @@ DOUYIN_OPINION_REPORT_DATE = ""  # YYYY-MM-DD, blank uses the current China date
 DOUYIN_OPINION_REPORT_OUTPUT = ""  # blank uses <M.DD>抖音舆论检测.xlsx
 DOUYIN_OPINION_MATCH = "all"  # all = every keyword must appear; any = one is enough
 DOUYIN_OPINION_WATCH_ACCOUNTS = []  # Douyin IDs/profile URLs checked before keyword search
+DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS = []  # Video URLs/IDs fetched directly to cover search-index gaps
 DOUYIN_OPINION_ENABLE_OCR = True  # OCR text in image-carousel posts
 DOUYIN_OPINION_OCR_MAX_IMAGES = 35
+DOUYIN_OPINION_VIDEO_OCR_MAX_FRAMES = 6  # sampled frames for supplemental/watch videos
 DOUYIN_OPINION_WATCH_MAX_POSTS = 36  # per account; date filtering stops older pages early
 DOUYIN_OPINION_SCOPE = "all"  # all = keyword search + watchlist; watch_only = watchlist only
 

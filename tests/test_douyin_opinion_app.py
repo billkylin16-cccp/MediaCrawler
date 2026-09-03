@@ -3,6 +3,7 @@ from pathlib import Path
 from douyin_opinion_app import (
     next_report_path,
     normalize_keywords,
+    normalize_video_entries,
     read_watch_accounts,
     safe_file_component,
 )
@@ -15,6 +16,14 @@ def test_normalize_keywords_accepts_chinese_and_ascii_separators():
         "武陟",
         "招聘",
         "民生",
+    ]
+
+
+def test_normalize_video_entries_accepts_modal_links_and_deduplicates():
+    target = "https://www.douyin.com/jingxuan/search/test?modal_id=7681224368026714971"
+    assert normalize_video_entries(f"{target}；7681224368026714971 {target}") == [
+        target,
+        "7681224368026714971",
     ]
 
 

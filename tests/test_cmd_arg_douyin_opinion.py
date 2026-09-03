@@ -18,6 +18,7 @@ async def test_douyin_opinion_cli_sets_report_config():
         "DOUYIN_OPINION_REPORT_OUTPUT": config.DOUYIN_OPINION_REPORT_OUTPUT,
         "DOUYIN_OPINION_MATCH": config.DOUYIN_OPINION_MATCH,
         "DOUYIN_OPINION_WATCH_ACCOUNTS": config.DOUYIN_OPINION_WATCH_ACCOUNTS,
+        "DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS": config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS,
         "DOUYIN_OPINION_ENABLE_OCR": config.DOUYIN_OPINION_ENABLE_OCR,
         "DOUYIN_OPINION_OCR_MAX_IMAGES": config.DOUYIN_OPINION_OCR_MAX_IMAGES,
         "DOUYIN_OPINION_WATCH_MAX_POSTS": config.DOUYIN_OPINION_WATCH_MAX_POSTS,
@@ -32,6 +33,7 @@ async def test_douyin_opinion_cli_sets_report_config():
             "--opinion_output", "8.24抖音舆论检测.xlsx",
             "--opinion_match", "any",
             "--opinion_watch_accounts", "xuhaoran888,29811185454",
+            "--opinion_supplemental_videos", "7681224368026714971,7680451267802472057",
             "--opinion_ocr", "yes",
             "--opinion_ocr_max_images", "20",
             "--opinion_watch_max_posts", "24",
@@ -43,6 +45,10 @@ async def test_douyin_opinion_cli_sets_report_config():
         assert config.DOUYIN_OPINION_REPORT_DATE == "2026-08-24"
         assert config.DOUYIN_OPINION_REPORT_OUTPUT == "8.24抖音舆论检测.xlsx"
         assert config.DOUYIN_OPINION_WATCH_ACCOUNTS == ["xuhaoran888", "29811185454"]
+        assert config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS == [
+            "7681224368026714971",
+            "7680451267802472057",
+        ]
         assert config.DOUYIN_OPINION_ENABLE_OCR is True
         assert config.DOUYIN_OPINION_OCR_MAX_IMAGES == 20
         assert config.DOUYIN_OPINION_WATCH_MAX_POSTS == 24

@@ -44,6 +44,7 @@ class VideoRecord:
     description_keywords: tuple[str, ...]
     ocr_pages: tuple[OcrPageResult, ...]
     watch_account: str
+    discovery_source: str
 
     @property
     def url(self) -> str:
@@ -168,6 +169,7 @@ class DouyinOpinionReport:
         aweme: Dict[str, Any],
         ocr_pages: Iterable[OcrPageResult] = (),
         watch_account: str = "",
+        discovery_source: str = "",
     ) -> bool:
         """Keep a video only when its text and publish date satisfy the report rule.
 
@@ -184,6 +186,7 @@ class DouyinOpinionReport:
                 page=page.page,
                 text=_clean(page.text),
                 confidence=page.confidence,
+                source=page.source,
             )
             for page in ocr_pages
             if _clean(page.text)
@@ -204,6 +207,7 @@ class DouyinOpinionReport:
             description_keywords=description_hits,
             ocr_pages=normalized_ocr_pages,
             watch_account=_excel_safe_text(watch_account),
+            discovery_source=_excel_safe_text(discovery_source),
         )
         return True
 
@@ -247,11 +251,22 @@ class DouyinOpinionReport:
             if video.description_keywords:
                 source_parts.append("作品描述")
             ocr_hit_pages = [
-                page.page for page in video.ocr_pages if self._matched_keywords(page.text)
+                page.page
+                for page in video.ocr_pages
+                if page.source == "image" and self._matched_keywords(page.text)
+            ]
+            video_hit_frames = [
+                page.page
+                for page in video.ocr_pages
+                if page.source == "video" and self._matched_keywords(page.text)
             ]
             if ocr_hit_pages:
                 source_parts.append(
                     "图片OCR第" + "、".join(str(page) for page in ocr_hit_pages) + "张"
+                )
+            if video_hit_frames:
+                source_parts.append(
+                    "视频OCR第" + "、".join(str(page) for page in video_hit_frames) + "帧"
                 )
             if not source_parts:
                 source_parts.append("搜索命中")
@@ -259,9 +274,16 @@ class DouyinOpinionReport:
             content_parts = [video.content]
             if video.ocr_pages:
                 ocr_text = "｜".join(
-                    f"第{page.page}张：{page.text[:1000]}" for page in video.ocr_pages
+                    (
+                        f"第{page.page}{'帧' if page.source == 'video' else '张'}："
+                        f"{page.text[:1000]}"
+                    )
+                    for page in video.ocr_pages
                 )
-                content_parts.append(f"【图片OCR】{ocr_text[:12000]}")
+                label = "视频抽帧OCR" if any(
+                    page.source == "video" for page in video.ocr_pages
+                ) else "图片OCR"
+                content_parts.append(f"【{label}】{ocr_text[:12000]}")
             content = "\n".join(content_parts)
 
             info_parts = [
@@ -270,6 +292,8 @@ class DouyinOpinionReport:
                 f"匹配：{matched}",
                 f"命中来源：{'、'.join(source_parts)}",
             ]
+            if video.discovery_source:
+                info_parts.append(f"发现方式：{video.discovery_source}")
             if video.watch_account:
                 info_parts.append(f"重点账号：{video.watch_account}")
             info_parts.append(f"链接：{video.url}")

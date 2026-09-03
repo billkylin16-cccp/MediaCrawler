@@ -349,6 +349,14 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Douyin Opinion Monitor",
             ),
         ] = ",".join(config.DOUYIN_OPINION_WATCH_ACCOUNTS),
+        opinion_supplemental_videos: Annotated[
+            str,
+            typer.Option(
+                "--opinion_supplemental_videos",
+                help="Douyin work URLs/IDs to fetch directly, separated by commas",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = ",".join(config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS),
         opinion_ocr: Annotated[
             str,
             typer.Option(
@@ -439,6 +447,9 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         opinion_watch_account_list = [
             item.strip() for item in opinion_watch_accounts.split(",") if item.strip()
         ] if opinion_watch_accounts else []
+        opinion_supplemental_video_list = [
+            item.strip() for item in opinion_supplemental_videos.split(",") if item.strip()
+        ] if opinion_supplemental_videos else []
 
         # override global config
         config.PLATFORM = platform.value
@@ -461,6 +472,7 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.DOUYIN_OPINION_REPORT_OUTPUT = opinion_output
         config.DOUYIN_OPINION_MATCH = opinion_match.value
         config.DOUYIN_OPINION_WATCH_ACCOUNTS = opinion_watch_account_list
+        config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS = opinion_supplemental_video_list
         config.DOUYIN_OPINION_ENABLE_OCR = enable_douyin_opinion_ocr
         config.DOUYIN_OPINION_OCR_MAX_IMAGES = opinion_ocr_max_images
         config.DOUYIN_OPINION_WATCH_MAX_POSTS = opinion_watch_max_posts
@@ -519,6 +531,7 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
             opinion_output=config.DOUYIN_OPINION_REPORT_OUTPUT,
             opinion_match=config.DOUYIN_OPINION_MATCH,
             opinion_watch_accounts=config.DOUYIN_OPINION_WATCH_ACCOUNTS,
+            opinion_supplemental_videos=config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS,
             opinion_ocr=config.DOUYIN_OPINION_ENABLE_OCR,
             opinion_ocr_max_images=config.DOUYIN_OPINION_OCR_MAX_IMAGES,
             opinion_watch_max_posts=config.DOUYIN_OPINION_WATCH_MAX_POSTS,

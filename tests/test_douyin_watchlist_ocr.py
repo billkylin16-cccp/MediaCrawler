@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from media_platform.douyin.help import parse_creator_info_from_url
+from media_platform.douyin.help import parse_creator_info_from_url, parse_video_info_from_url
 from tools.douyin_image_ocr import extract_ocr_lines
 from tools.douyin_watchlist import choose_exact_user, public_account_label
 
@@ -32,6 +32,17 @@ def test_choose_exact_user_avoids_similar_account():
     assert chosen is not None
     assert chosen["sec_uid"] == "right"
     assert public_account_label(chosen, "fallback") == "重点账号（xuhaoran888）"
+
+
+def test_parse_jingxuan_search_modal_link_as_video():
+    url = (
+        "https://www.douyin.com/jingxuan/search/%E5%BC%BA%E5%BC%BA%E8%81%94%E6%89%8B"
+        "?aid=dd62cf19-2af1-4d65-af55-e97f820c9396"
+        "&modal_id=7681224368026714971&type=general"
+    )
+    parsed = parse_video_info_from_url(url)
+    assert parsed.aweme_id == "7681224368026714971"
+    assert parsed.url_type == "modal"
 
 
 def test_default_watchlist_uses_seven_unique_creator_urls():

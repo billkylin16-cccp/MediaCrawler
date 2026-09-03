@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 APP_NAME = "抖音舆情监测"
 APP_ID = "DouyinOpinionMonitor"
-APP_VERSION = "0.2.0-beta.1"
+APP_VERSION = "0.2.1-beta.1"
 LICENSE_ACCEPTED_VERSION = "1.1"
 
 MODE_LABELS = {
@@ -121,6 +121,15 @@ def normalize_keywords(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,\s]+", normalized) if item.strip()]
 
 
+def normalize_video_entries(value: str) -> list[str]:
+    """Accept Douyin work URLs/IDs separated by whitespace or common punctuation."""
+    normalized = value.replace("\\&", "&")
+    for separator in ("，", "、", "；", ";"):
+        normalized = normalized.replace(separator, ",")
+    entries = [item.strip() for item in re.split(r"[,\s]+", normalized) if item.strip()]
+    return list(dict.fromkeys(entries))
+
+
 def safe_file_component(value: str, max_length: int = 36) -> str:
     safe = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", value, flags=re.UNICODE).strip("_")
     return (safe or "关键词")[:max_length].rstrip("_")
@@ -145,6 +154,7 @@ def load_settings(path: Path) -> dict[str, Any]:
         "opinion_date": datetime.now().strftime("%Y-%m-%d"),
         "mode": "all",
         "match": "all",
+        "supplemental_videos": "",
         "output_dir": str(default_report_dir()),
         "enable_ocr": True,
         "get_comments": True,
@@ -152,6 +162,7 @@ def load_settings(path: Path) -> dict[str, Any]:
         "max_videos": 100,
         "max_comments": 200,
         "ocr_max_images": 35,
+        "video_ocr_max_frames": 6,
         "watch_max_posts": 36,
         "license_accepted": "",
     }
@@ -271,8 +282,10 @@ async def _run_crawler_job(job: dict[str, Any]) -> str:
     config.DOUYIN_OPINION_REPORT_OUTPUT = job["output_path"]
     config.DOUYIN_OPINION_MATCH = job["match"]
     config.DOUYIN_OPINION_WATCH_ACCOUNTS = list(job["watch_accounts"])
+    config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS = list(job.get("supplemental_videos", []))
     config.DOUYIN_OPINION_ENABLE_OCR = bool(job["enable_ocr"])
     config.DOUYIN_OPINION_OCR_MAX_IMAGES = int(job["ocr_max_images"])
+    config.DOUYIN_OPINION_VIDEO_OCR_MAX_FRAMES = int(job.get("video_ocr_max_frames", 6))
     config.DOUYIN_OPINION_WATCH_MAX_POSTS = int(job["watch_max_posts"])
     config.DOUYIN_OPINION_SCOPE = job["mode"]
     config.ENABLE_IP_PROXY = False
@@ -356,7 +369,7 @@ class OpinionMonitorApp:
         self.settings = load_settings(self.paths["settings"])
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} {APP_VERSION}")
-        self.root.geometry("920x680")
+        self.root.geometry("920x720")
         self.root.minsize(820, 600)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -364,6 +377,7 @@ class OpinionMonitorApp:
         self.date_var = tk.StringVar(value=str(self.settings["opinion_date"]))
         self.mode_var = tk.StringVar(value=self._label_for(MODE_LABELS, self.settings["mode"]))
         self.match_var = tk.StringVar(value=self._label_for(MATCH_LABELS, self.settings["match"]))
+        self.supplemental_var = tk.StringVar(value=str(self.settings["supplemental_videos"]))
         self.output_var = tk.StringVar(value=str(self.settings["output_dir"]))
         self.ocr_var = tk.BooleanVar(value=bool(self.settings["enable_ocr"]))
         self.comments_var = tk.BooleanVar(value=bool(self.settings["get_comments"]))
@@ -425,13 +439,17 @@ class OpinionMonitorApp:
         ttk.Combobox(form, textvariable=self.match_var, values=list(MATCH_LABELS), state="readonly").grid(row=3, column=1, sticky="ew", pady=5)
         ttk.Label(form, textvariable=self.watch_count_var).grid(row=3, column=2, sticky="w", padx=(10, 0))
 
-        ttk.Label(form, text="报表目录").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Entry(form, textvariable=self.output_var).grid(row=4, column=1, sticky="ew", pady=5)
-        ttk.Button(form, text="选择目录", command=self.choose_output_dir).grid(row=4, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="指定作品补漏").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.supplemental_var).grid(row=4, column=1, sticky="ew", pady=5)
+        ttk.Label(form, text="粘贴作品链接或ID，多个用空格分隔").grid(row=4, column=2, sticky="w", padx=(10, 0))
+
+        ttk.Label(form, text="报表目录").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.output_var).grid(row=5, column=1, sticky="ew", pady=5)
+        ttk.Button(form, text="选择目录", command=self.choose_output_dir).grid(row=5, column=2, sticky="w", padx=(10, 0))
 
         options = ttk.Frame(form)
-        options.grid(row=5, column=1, columnspan=2, sticky="w", pady=(7, 2))
-        ttk.Checkbutton(options, text="识别轮播图片文字（OCR）", variable=self.ocr_var).pack(side="left", padx=(0, 18))
+        options.grid(row=6, column=1, columnspan=2, sticky="w", pady=(7, 2))
+        ttk.Checkbutton(options, text="识别图片及重点视频文字（OCR）", variable=self.ocr_var).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(options, text="抓取评论", variable=self.comments_var).pack(side="left", padx=(0, 18))
         ttk.Checkbutton(options, text="包含二级回复", variable=self.replies_var).pack(side="left")
 
@@ -524,6 +542,7 @@ class OpinionMonitorApp:
         datetime.strptime(opinion_date, "%Y-%m-%d")
         mode = MODE_LABELS[self.mode_var.get()]
         match = MATCH_LABELS[self.match_var.get()]
+        supplemental_videos = normalize_video_entries(self.supplemental_var.get())
         watch_accounts = read_watch_accounts(self.paths["watchlist"])
         if mode == "watch_only" and not watch_accounts:
             raise ValueError("“仅重点账号”模式至少需要一个重点账号。")
@@ -534,6 +553,7 @@ class OpinionMonitorApp:
             "opinion_date": opinion_date,
             "mode": mode,
             "match": match,
+            "supplemental_videos": "\n".join(supplemental_videos),
             "output_dir": str(output_dir),
             "enable_ocr": bool(self.ocr_var.get()),
             "get_comments": bool(self.comments_var.get()),
@@ -541,6 +561,7 @@ class OpinionMonitorApp:
             "max_videos": int(self.settings.get("max_videos", 100)),
             "max_comments": int(self.settings.get("max_comments", 200)),
             "ocr_max_images": int(self.settings.get("ocr_max_images", 35)),
+            "video_ocr_max_frames": int(self.settings.get("video_ocr_max_frames", 6)),
             "watch_max_posts": int(self.settings.get("watch_max_posts", 36)),
             "license_accepted": LICENSE_ACCEPTED_VERSION,
         }
@@ -569,6 +590,7 @@ class OpinionMonitorApp:
             **settings,
             "keywords": keywords,
             "watch_accounts": watch_accounts,
+            "supplemental_videos": normalize_video_entries(settings["supplemental_videos"]),
             "output_path": str(output_path),
             "log_path": str(log_path),
             "status_path": str(status_path),

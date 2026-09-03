@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Optional
 
@@ -16,6 +18,7 @@ class OcrPageResult:
     page: int
     text: str
     confidence: Optional[float]
+    source: str = "image"
 
 
 def extract_ocr_lines(result: Any) -> list[tuple[str, Optional[float]]]:
@@ -82,11 +85,23 @@ class DouyinImageOcr:
             engine = RapidOCR()
         self.engine = engine
 
-    def _recognize_bytes(self, content: bytes, page: int) -> Optional[OcrPageResult]:
-        image_data = np.frombuffer(content, dtype=np.uint8)
-        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+    def _recognize_image(
+        self,
+        image: np.ndarray,
+        page: int,
+        source: str = "image",
+    ) -> Optional[OcrPageResult]:
         if image is None:
             return None
+        height, width = image.shape[:2]
+        maximum_side = max(height, width)
+        if maximum_side > 1280:
+            scale = 1280 / maximum_side
+            image = cv2.resize(
+                image,
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
         raw_result = self.engine(image)
         accepted: list[tuple[str, Optional[float]]] = []
         for text, confidence in extract_ocr_lines(raw_result):
@@ -102,7 +117,70 @@ class DouyinImageOcr:
             page=page,
             text=" ".join(text for text, _ in accepted),
             confidence=confidence,
+            source=source,
         )
+
+    def _recognize_bytes(self, content: bytes, page: int) -> Optional[OcrPageResult]:
+        image_data = np.frombuffer(content, dtype=np.uint8)
+        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+        return self._recognize_image(image, page)
+
+    def _recognize_video_bytes(
+        self,
+        content: bytes,
+        max_frames: int,
+    ) -> list[OcrPageResult]:
+        temporary_path = ""
+        capture = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
+                handle.write(content)
+                temporary_path = handle.name
+            capture = cv2.VideoCapture(temporary_path)
+            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            if frame_count <= 0:
+                return []
+            fps = float(capture.get(cv2.CAP_PROP_FPS))
+            duration_seconds = frame_count / fps if fps > 0 else float(max_frames)
+            sample_count = min(
+                max_frames,
+                frame_count,
+                max(3, int(duration_seconds) + 1),
+            )
+            frame_indexes = sorted(
+                set(
+                    int(index)
+                    for index in np.linspace(
+                        int((frame_count - 1) * 0.05),
+                        int((frame_count - 1) * 0.95),
+                        sample_count,
+                    )
+                )
+            )
+            results: list[OcrPageResult] = []
+            seen_text: set[str] = set()
+            for frame_number, frame_index in enumerate(frame_indexes, start=1):
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                ok, frame = capture.read()
+                if not ok:
+                    continue
+                result = self._recognize_image(
+                    frame,
+                    page=frame_number,
+                    source="video",
+                )
+                if result and result.text not in seen_text:
+                    seen_text.add(result.text)
+                    results.append(result)
+            return results
+        finally:
+            if capture is not None:
+                capture.release()
+            if temporary_path:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
 
     async def recognize_urls(
         self,
@@ -120,3 +198,20 @@ class DouyinImageOcr:
             if result:
                 results.append(result)
         return results
+
+    async def recognize_video_url(
+        self,
+        url: str,
+        fetcher: Callable[[str], Awaitable[Optional[bytes]]],
+        max_frames: int = 6,
+    ) -> list[OcrPageResult]:
+        if max_frames < 1 or not url:
+            return []
+        content = await fetcher(url)
+        if not content:
+            return []
+        return await asyncio.to_thread(
+            self._recognize_video_bytes,
+            content,
+            max_frames,
+        )

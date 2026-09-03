@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.0-beta.1"
+  #define AppVersion "0.2.1-beta.1"
 #endif
 #ifndef SourceDir
   #error SourceDir must be supplied by build_release.ps1

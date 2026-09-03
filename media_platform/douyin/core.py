@@ -29,6 +29,7 @@ from playwright.async_api import (
     BrowserType,
     Page,
     Playwright,
+    TimeoutError as PlaywrightTimeoutError,
     async_playwright,
 )
 
@@ -149,6 +150,8 @@ class DouYinCrawler(AbstractCrawler):
             crawler_type_var.set(config.CRAWLER_TYPE)
             if config.CRAWLER_TYPE == "search":
                 # Search for notes and retrieve their comment information.
+                if self.opinion_report and config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS:
+                    await self.scan_supplemental_awemes()
                 if self.opinion_report and config.DOUYIN_OPINION_WATCH_ACCOUNTS:
                     await self.scan_watch_accounts()
                 if config.DOUYIN_OPINION_SCOPE != "watch_only":
@@ -219,7 +222,10 @@ class DouYinCrawler(AbstractCrawler):
                     aweme_id = aweme_info.get("aweme_id", "")
                     aweme_list.append(aweme_id)
                     if self.opinion_report:
-                        if await self.process_opinion_aweme(aweme_info):
+                        if await self.process_opinion_aweme(
+                            aweme_info,
+                            discovery_source="关键词搜索",
+                        ):
                             page_aweme_list.append(aweme_id)
                     else:
                         page_aweme_list.append(aweme_id)
@@ -325,6 +331,7 @@ class DouYinCrawler(AbstractCrawler):
         self,
         aweme_info: Dict,
         watch_account: str = "",
+        discovery_source: str = "",
     ) -> bool:
         if not self.opinion_report:
             return False
@@ -339,15 +346,10 @@ class DouYinCrawler(AbstractCrawler):
         image_urls = extract_note_image_list(detail)
         is_image_post = bool(image_urls) or str(detail.get("aweme_type")) == "68"
         if self.image_ocr and is_image_post and not image_urls:
-            try:
-                fetched_detail = await self.dy_client.get_video_by_id(aweme_id)
-                if fetched_detail:
-                    detail = fetched_detail
-                    image_urls = extract_note_image_list(detail)
-            except DataFetchError as exc:
-                utils.logger.warning(
-                    f"[DouYinCrawler] Unable to load image-post detail {aweme_id}: {exc}"
-                )
+            fetched_detail = await self.fetch_opinion_aweme_detail(aweme_id)
+            if fetched_detail:
+                detail = fetched_detail
+                image_urls = extract_note_image_list(detail)
 
         ocr_pages = []
         if self.image_ocr and image_urls:
@@ -364,12 +366,235 @@ class DouYinCrawler(AbstractCrawler):
                 utils.logger.warning(
                     f"[DouYinCrawler] OCR failed for {aweme_id}; continuing with description: {exc}"
                 )
+        elif (
+            self.image_ocr
+            and discovery_source in {"指定链接补漏", "重点账号复查"}
+        ):
+            video_url = extract_video_download_url(detail)
+            if video_url:
+                try:
+                    async def fetch_video_media(url: str) -> Optional[bytes]:
+                        return await self.fetch_opinion_video_media(url, aweme_id)
+
+                    ocr_pages = await self.image_ocr.recognize_video_url(
+                        video_url,
+                        fetch_video_media,
+                        max_frames=config.DOUYIN_OPINION_VIDEO_OCR_MAX_FRAMES,
+                    )
+                    utils.logger.info(
+                        f"[DouYinCrawler] Video-frame OCR completed for {aweme_id}: "
+                        f"text_frames={len(ocr_pages)}"
+                    )
+                except Exception as exc:
+                    utils.logger.warning(
+                        f"[DouYinCrawler] Video-frame OCR failed for {aweme_id}; "
+                        f"continuing with description: {exc}"
+                    )
 
         return self.opinion_report.add_video(
             detail,
             ocr_pages=ocr_pages,
             watch_account=watch_account,
+            discovery_source=discovery_source,
         )
+
+    async def fetch_opinion_aweme_detail(self, aweme_id: str) -> Dict:
+        """Load details through the API, then fall back to the real browser page."""
+        try:
+            detail = await self.dy_client.get_video_by_id(aweme_id)
+            if detail:
+                return detail
+        except DataFetchError as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Detail API failed for {aweme_id}; "
+                f"trying browser-page fallback: {exc}"
+            )
+
+        page: Optional[Page] = None
+        try:
+            page = await self.browser_context.new_page()
+            detail_path = "/aweme/v1/web/aweme/detail/"
+            async with page.expect_response(
+                lambda response: (
+                    detail_path in response.url
+                    and f"aweme_id={aweme_id}" in response.url
+                ),
+                timeout=45_000,
+            ) as response_info:
+                await page.goto(
+                    f"https://www.douyin.com/video/{aweme_id}",
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+            response = await response_info.value
+            payload = await response.json()
+            detail = payload.get("aweme_detail") if isinstance(payload, dict) else None
+            if isinstance(detail, dict) and detail:
+                utils.logger.info(
+                    f"[DouYinCrawler] Browser-page fallback loaded detail: {aweme_id}"
+                )
+                return detail
+            utils.logger.warning(
+                f"[DouYinCrawler] Browser-page detail is empty: {aweme_id}"
+            )
+        except (PlaywrightTimeoutError, ValueError, TypeError) as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Browser-page fallback failed for {aweme_id}: {exc}"
+            )
+        except Exception as exc:
+            utils.logger.error(
+                f"[DouYinCrawler] Unexpected browser-page fallback error for {aweme_id}: {exc}"
+            )
+        finally:
+            if page:
+                await page.close()
+        return {}
+
+    async def fetch_opinion_video_media(
+        self,
+        url: str,
+        aweme_id: str,
+    ) -> Optional[bytes]:
+        """Download video bytes, using the logged-in browser when the CDN blocks HTTPX."""
+        try:
+            response = await self.browser_context.request.get(
+                url,
+                headers={"Referer": f"https://www.douyin.com/video/{aweme_id}"},
+                timeout=45_000,
+            )
+            if response.ok:
+                content = await response.body()
+                utils.logger.info(
+                    f"[DouYinCrawler] Browser session downloaded video: "
+                    f"{aweme_id}, bytes={len(content)}"
+                )
+                return content
+            utils.logger.warning(
+                f"[DouYinCrawler] Browser video download failed for {aweme_id}: "
+                f"HTTP {response.status}"
+            )
+        except Exception as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Browser video download failed for {aweme_id}: {exc}"
+            )
+        return await self.dy_client.get_aweme_media(url)
+
+    async def fetch_watch_account_posts(
+        self,
+        sec_uid: str,
+        max_cursor: str = "",
+    ) -> Dict:
+        """Load a watch account page, falling back to browser data on the first page."""
+        try:
+            response = await self.dy_client.get_user_aweme_posts(sec_uid, max_cursor)
+            if (response or {}).get("aweme_list") or max_cursor:
+                return response
+        except DataFetchError as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Watch-account API failed for {sec_uid}; "
+                f"trying browser-page fallback: {exc}"
+            )
+
+        if max_cursor:
+            return {}
+        page: Optional[Page] = None
+        try:
+            page = await self.browser_context.new_page()
+            post_path = "/aweme/v1/web/aweme/post/"
+            async with page.expect_response(
+                lambda candidate: (
+                    post_path in candidate.url
+                    and sec_uid in candidate.url
+                ),
+                timeout=45_000,
+            ) as response_info:
+                await page.goto(
+                    f"https://www.douyin.com/user/{sec_uid}",
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+            payload = await (await response_info.value).json()
+            if isinstance(payload, dict) and payload.get("aweme_list"):
+                post_ids = [
+                    str(item.get("aweme_id") or "")
+                    for item in payload["aweme_list"][:10]
+                    if isinstance(item, dict)
+                ]
+                utils.logger.info(
+                    f"[DouYinCrawler] Browser-page fallback loaded watch account: "
+                    f"{sec_uid}, posts={len(payload['aweme_list'])}, ids={post_ids}"
+                )
+                return payload
+            utils.logger.warning(
+                f"[DouYinCrawler] Browser watch-account page is empty: {sec_uid}"
+            )
+        except (PlaywrightTimeoutError, ValueError, TypeError) as exc:
+            utils.logger.warning(
+                f"[DouYinCrawler] Browser watch-account fallback failed for {sec_uid}: {exc}"
+            )
+        except Exception as exc:
+            utils.logger.error(
+                f"[DouYinCrawler] Unexpected watch-account fallback error for {sec_uid}: {exc}"
+            )
+        finally:
+            if page:
+                await page.close()
+        return {}
+
+    async def scan_supplemental_awemes(self) -> None:
+        """Fetch user-supplied works directly when keyword search did not return them."""
+        if not self.opinion_report:
+            return
+        entries = config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS
+        utils.logger.info(
+            f"[DouYinCrawler] Begin supplemental-work scan: entries={len(entries)}"
+        )
+        selected_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for entry in entries:
+            try:
+                video_info = parse_video_info_from_url(entry)
+                if video_info.url_type == "short":
+                    resolved_url = await self.dy_client.resolve_short_url(entry)
+                    if not resolved_url:
+                        raise ValueError("短链接解析失败")
+                    video_info = parse_video_info_from_url(resolved_url)
+                aweme_id = str(video_info.aweme_id or "").strip()
+                if not aweme_id or aweme_id in seen_ids:
+                    continue
+                seen_ids.add(aweme_id)
+                utils.logger.info(
+                    f"[DouYinCrawler] Directly fetching supplemental work: {aweme_id}"
+                )
+                detail = await self.fetch_opinion_aweme_detail(aweme_id)
+                if not detail:
+                    utils.logger.warning(
+                        f"[DouYinCrawler] Supplemental work detail is empty: {aweme_id}"
+                    )
+                    continue
+                if await self.process_opinion_aweme(
+                    detail,
+                    discovery_source="指定链接补漏",
+                ):
+                    selected_ids.append(aweme_id)
+                    utils.logger.info(
+                        f"[DouYinCrawler] Supplemental work selected for report: {aweme_id}"
+                    )
+                else:
+                    utils.logger.info(
+                        f"[DouYinCrawler] Supplemental work did not match the date/keywords: {aweme_id}"
+                    )
+            except (DataFetchError, ValueError) as exc:
+                utils.logger.warning(
+                    f"[DouYinCrawler] Supplemental work failed ({entry}): {exc}"
+                )
+            except Exception as exc:
+                utils.logger.error(
+                    f"[DouYinCrawler] Unexpected supplemental-work error ({entry}): {exc}"
+                )
+            finally:
+                await asyncio.sleep(min(float(config.CRAWLER_MAX_SLEEP_SEC), 2.0))
+        await self.batch_get_note_comments(selected_ids)
 
     async def scan_watch_accounts(self) -> None:
         if not self.opinion_report:
@@ -394,7 +619,7 @@ class DouYinCrawler(AbstractCrawler):
                 scanned = 0
                 stop_on_older_post = False
                 while scanned < config.DOUYIN_OPINION_WATCH_MAX_POSTS:
-                    response = await self.dy_client.get_user_aweme_posts(sec_uid, max_cursor)
+                    response = await self.fetch_watch_account_posts(sec_uid, max_cursor)
                     aweme_list = response.get("aweme_list") or []
                     if not aweme_list:
                         break
@@ -403,6 +628,10 @@ class DouYinCrawler(AbstractCrawler):
                         if scanned >= config.DOUYIN_OPINION_WATCH_MAX_POSTS:
                             break
                         scanned += 1
+                        utils.logger.info(
+                            f"[DouYinCrawler] Watch-account work: "
+                            f"account={account_label}, aweme_id={aweme_info.get('aweme_id')}"
+                        )
                         publish_date = self.opinion_report.publish_date(aweme_info)
                         if publish_date and publish_date < self.opinion_report.target_date:
                             stop_on_older_post = True
@@ -412,6 +641,7 @@ class DouYinCrawler(AbstractCrawler):
                         if await self.process_opinion_aweme(
                             aweme_info,
                             watch_account=account_label,
+                            discovery_source="重点账号复查",
                         ):
                             selected_ids.append(str(aweme_info.get("aweme_id")))
 
