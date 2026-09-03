@@ -60,9 +60,16 @@ jobs:
             packaging/output/*.exe
             packaging/output/*.sha256
 
-      - name: Publish tagged release
-        if: github.ref_type == 'tag'
+      - name: Publish release
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME packaging/output/*.exe packaging/output/*.sha256 --generate-notes --verify-tag
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v$env:RELEASE_VERSION" }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --target $env:GITHUB_SHA --generate-notes
+          }
+          gh release upload $tag packaging/output/*.exe packaging/output/*.sha256 --clobber
