@@ -13,15 +13,16 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
 
 
 APP_NAME = "抖音舆情监测"
 APP_ID = "DouyinOpinionMonitor"
-APP_VERSION = "0.2.1-beta.1"
+APP_VERSION = "0.3.0-beta.1"
 LICENSE_ACCEPTED_VERSION = "1.1"
+SCHEDULE_TASK_NAME = "DouyinOpinionMonitor每日监测"
 
 MODE_LABELS = {
     "全站关键词 + 重点账号": "all",
@@ -69,6 +70,8 @@ def user_paths() -> dict[str, Path]:
         "logs": root / "logs",
         "watchlist": root / "config" / "douyin_watch_accounts.txt",
         "settings": root / "config" / "settings.json",
+        "history": root / "history" / "opinion_history.db",
+        "dashboard": root / "dashboard" / "抖音舆情数据看板.html",
     }
 
 
@@ -164,6 +167,14 @@ def load_settings(path: Path) -> dict[str, Any]:
         "ocr_max_images": 35,
         "video_ocr_max_frames": 6,
         "watch_max_posts": 36,
+        "enable_speech": False,
+        "speech_model": "tiny",
+        "speech_max_videos": 12,
+        "deduplicate": True,
+        "run_retries": 2,
+        "schedule_enabled": False,
+        "schedule_time": "08:30",
+        "backfill_days": 3,
         "license_accepted": "",
     }
     if not path.exists():
@@ -211,6 +222,11 @@ def runtime_self_check() -> list[str]:
         RapidOCR()
     except Exception as exc:
         errors.append(f"OCR 运行时不可用：{exc}")
+    try:
+        import sqlite3  # noqa: F401
+        from faster_whisper import WhisperModel  # noqa: F401
+    except Exception as exc:
+        errors.append(f"本地历史或语音识别运行时不可用：{exc}")
     try:
         from media_platform.douyin import DouYinCrawler
 
@@ -288,6 +304,15 @@ async def _run_crawler_job(job: dict[str, Any]) -> str:
     config.DOUYIN_OPINION_VIDEO_OCR_MAX_FRAMES = int(job.get("video_ocr_max_frames", 6))
     config.DOUYIN_OPINION_WATCH_MAX_POSTS = int(job["watch_max_posts"])
     config.DOUYIN_OPINION_SCOPE = job["mode"]
+    config.DOUYIN_OPINION_HISTORY_DB = str(job.get("history_path") or "")
+    config.DOUYIN_OPINION_DEDUPLICATE = bool(job.get("deduplicate", True))
+    config.DOUYIN_OPINION_DASHBOARD_OUTPUT = str(job.get("dashboard_path") or "")
+    config.DOUYIN_OPINION_ENABLE_SPEECH = bool(job.get("enable_speech", False))
+    config.DOUYIN_OPINION_SPEECH_MODEL = str(job.get("speech_model") or "tiny")
+    config.DOUYIN_OPINION_SPEECH_MAX_VIDEOS = int(job.get("speech_max_videos", 12))
+    config.DOUYIN_OPINION_SPEECH_MODEL_DIR = str(
+        local_data_root() / "models" / "faster-whisper"
+    )
     config.ENABLE_IP_PROXY = False
     config.ENABLE_GET_MEIDAS = False
 
@@ -317,6 +342,8 @@ async def _run_crawler_job(job: dict[str, Any]) -> str:
 
 
 def run_worker(job_path: Path) -> int:
+    from tools.douyin_opinion_history import OpinionHistory
+
     job = json.loads(job_path.read_text(encoding="utf-8"))
     log_path = Path(job["log_path"])
     status_path = Path(job["status_path"])
@@ -329,33 +356,161 @@ def run_worker(job_path: Path) -> int:
     status: dict[str, Any] = {
         "state": "running",
         "output_path": job["output_path"],
+        "dashboard_path": job.get("dashboard_path", ""),
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "error": "",
+        "attempt": 1,
     }
     save_json(status_path, status)
+    history = OpinionHistory(job["history_path"])
+    run_id = str(job.get("run_id") or job_path.stem)
+    max_attempts = max(1, min(6, int(job.get("run_retries", 2)) + 1))
     try:
         print(f"[{APP_NAME}] 版本 {APP_VERSION}", flush=True)
         print(f"[{APP_NAME}] 关键词：{'、'.join(job['keywords'])}", flush=True)
         print(f"[{APP_NAME}] 监测日期：{job['opinion_date']}", flush=True)
         print(f"[{APP_NAME}] 重点账号：{len(job['watch_accounts'])} 个", flush=True)
-        result = asyncio.run(_run_crawler_job(job))
-        status["state"] = result
-        status["finished_at"] = datetime.now().isoformat(timespec="seconds")
-        save_json(status_path, status)
-        return 0 if result == "completed" else 130
-    except Exception as exc:
         import traceback
 
-        traceback.print_exc()
+        last_error = ""
+        for attempt in range(1, max_attempts + 1):
+            status["attempt"] = attempt
+            status["state"] = "running"
+            status["error"] = ""
+            save_json(status_path, status)
+            history.start_run(run_id, job["opinion_date"], job["output_path"], attempt)
+            print(f"[{APP_NAME}] 开始第 {attempt}/{max_attempts} 次尝试", flush=True)
+            try:
+                result = asyncio.run(_run_crawler_job(job))
+                status["state"] = result
+                status["finished_at"] = datetime.now().isoformat(timespec="seconds")
+                save_json(status_path, status)
+                history.finish_run(run_id, result)
+                return 0 if result == "completed" else 130
+            except Exception as exc:
+                traceback.print_exc()
+                last_error = str(exc)
+                if attempt >= max_attempts or Path(job["stop_path"]).exists():
+                    break
+                delay = min(60, 10 * attempt)
+                print(
+                    f"[{APP_NAME}] 本次运行失败，{delay} 秒后自动重试：{exc}",
+                    flush=True,
+                )
+                time.sleep(delay)
         status["state"] = "failed"
-        status["error"] = str(exc)
+        status["error"] = last_error
         status["finished_at"] = datetime.now().isoformat(timespec="seconds")
         save_json(status_path, status)
+        history.finish_run(run_id, "failed", last_error)
         return 1
     finally:
         sys.stdout = original_stdout
         sys.stderr = original_stderr
         log_handle.close()
+
+
+def _job_command() -> str:
+    if is_frozen():
+        return f'"{Path(sys.executable).resolve()}" --scheduled-run'
+    return f'"{Path(sys.executable).resolve()}" "{Path(__file__).resolve()}" --scheduled-run'
+
+
+def configure_daily_schedule(enabled: bool, schedule_time: str) -> None:
+    """Create or remove the current user's interactive daily Windows task."""
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
+        raise ValueError("定时时间必须为 HH:MM，例如 08:30。")
+    if enabled:
+        command = [
+            "schtasks.exe",
+            "/Create",
+            "/TN",
+            SCHEDULE_TASK_NAME,
+            "/TR",
+            _job_command(),
+            "/SC",
+            "DAILY",
+            "/ST",
+            schedule_time,
+            "/RL",
+            "LIMITED",
+            "/IT",
+            "/F",
+        ]
+    else:
+        command = ["schtasks.exe", "/Delete", "/TN", SCHEDULE_TASK_NAME, "/F"]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 and enabled:
+        message = (result.stderr or result.stdout or "任务计划操作失败").strip()
+        raise RuntimeError(message)
+
+
+def create_job(
+    settings: dict[str, Any],
+    watch_accounts: list[str],
+    paths: dict[str, Path],
+    opinion_date: str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    target_date = opinion_date or str(settings["opinion_date"])
+    keywords = normalize_keywords(str(settings["keywords"]))
+    output_path = next_report_path(Path(settings["output_dir"]), target_date, keywords)
+    job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    job_path = paths["jobs"] / f"{job_id}.json"
+    job = {
+        **settings,
+        "run_id": job_id,
+        "opinion_date": target_date,
+        "keywords": keywords,
+        "watch_accounts": watch_accounts,
+        "supplemental_videos": normalize_video_entries(
+            str(settings.get("supplemental_videos") or "")
+        ),
+        "output_path": str(output_path),
+        "dashboard_path": str(paths["dashboard"]),
+        "history_path": str(paths["history"]),
+        "log_path": str(paths["logs"] / f"{job_id}.log"),
+        "status_path": str(paths["jobs"] / f"{job_id}.status.json"),
+        "stop_path": str(paths["jobs"] / f"{job_id}.stop"),
+    }
+    save_json(job_path, job)
+    return job_path, job
+
+
+def run_scheduled() -> int:
+    """Run today plus any missed dates in the configured local backfill window."""
+    from tools.douyin_opinion_dashboard import write_dashboard
+    from tools.douyin_opinion_history import OpinionHistory
+
+    paths = ensure_user_files()
+    settings = load_settings(paths["settings"])
+    if not settings.get("schedule_enabled"):
+        return 0
+    watch_accounts = read_watch_accounts(paths["watchlist"])
+    history = OpinionHistory(paths["history"])
+    missing = history.missing_dates(
+        date.today(),
+        int(settings.get("backfill_days", 3)),
+    )
+    exit_code = 0
+    for missing_date in missing:
+        job_path, _ = create_job(
+            settings,
+            watch_accounts,
+            paths,
+            opinion_date=missing_date.isoformat(),
+        )
+        result = run_worker(job_path)
+        if result not in {0, 130}:
+            exit_code = result
+    write_dashboard(paths["history"], paths["dashboard"])
+    return exit_code
 
 
 class OpinionMonitorApp:
@@ -369,8 +524,8 @@ class OpinionMonitorApp:
         self.settings = load_settings(self.paths["settings"])
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} {APP_VERSION}")
-        self.root.geometry("920x720")
-        self.root.minsize(820, 600)
+        self.root.geometry("1020x820")
+        self.root.minsize(900, 680)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.keywords_var = tk.StringVar(value=str(self.settings["keywords"]))
@@ -380,8 +535,11 @@ class OpinionMonitorApp:
         self.supplemental_var = tk.StringVar(value=str(self.settings["supplemental_videos"]))
         self.output_var = tk.StringVar(value=str(self.settings["output_dir"]))
         self.ocr_var = tk.BooleanVar(value=bool(self.settings["enable_ocr"]))
+        self.speech_var = tk.BooleanVar(value=bool(self.settings.get("enable_speech", False)))
         self.comments_var = tk.BooleanVar(value=bool(self.settings["get_comments"]))
         self.replies_var = tk.BooleanVar(value=bool(self.settings["include_replies"]))
+        self.schedule_var = tk.BooleanVar(value=bool(self.settings.get("schedule_enabled", False)))
+        self.schedule_time_var = tk.StringVar(value=str(self.settings.get("schedule_time", "08:30")))
         self.status_var = tk.StringVar(value="准备就绪")
         self.watch_count_var = tk.StringVar()
 
@@ -390,6 +548,7 @@ class OpinionMonitorApp:
         self.log_offset = 0
         self.current_job: Optional[dict[str, Any]] = None
         self.last_output: Optional[Path] = None
+        self.last_dashboard: Optional[Path] = self.paths["dashboard"]
         self.closing_after_stop = False
         self._build_ui()
         self.refresh_watch_count()
@@ -415,7 +574,7 @@ class OpinionMonitorApp:
         ttk.Label(outer, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             outer,
-            text="重点账号优先扫描 · 全站关键词补充 · 轮播图片 OCR · 自动生成 Excel",
+            text="自动补采 · 历史去重 · 图片/视频/语音识别 · 风险研判 · Excel与本地看板",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(2, 14))
 
@@ -449,18 +608,29 @@ class OpinionMonitorApp:
 
         options = ttk.Frame(form)
         options.grid(row=6, column=1, columnspan=2, sticky="w", pady=(7, 2))
-        ttk.Checkbutton(options, text="识别图片及重点视频文字（OCR）", variable=self.ocr_var).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(options, text="抓取评论", variable=self.comments_var).pack(side="left", padx=(0, 18))
-        ttk.Checkbutton(options, text="包含二级回复", variable=self.replies_var).pack(side="left")
+        ttk.Checkbutton(options, text="画面文字识别（OCR）", variable=self.ocr_var).grid(row=0, column=0, sticky="w", padx=(0, 18))
+        ttk.Checkbutton(options, text="视频语音转文字（首次下载本地模型）", variable=self.speech_var).grid(row=0, column=1, sticky="w", padx=(0, 18))
+        ttk.Checkbutton(options, text="抓取评论", variable=self.comments_var).grid(row=1, column=0, sticky="w", padx=(0, 18), pady=(5, 0))
+        ttk.Checkbutton(options, text="包含二级回复", variable=self.replies_var).grid(row=1, column=1, sticky="w", pady=(5, 0))
+
+        schedule = ttk.Frame(form)
+        schedule.grid(row=7, column=1, columnspan=2, sticky="w", pady=(8, 2))
+        ttk.Checkbutton(schedule, text="每日自动运行", variable=self.schedule_var).pack(side="left")
+        ttk.Label(schedule, text="时间").pack(side="left", padx=(14, 5))
+        ttk.Entry(schedule, textvariable=self.schedule_time_var, width=8).pack(side="left")
+        ttk.Label(schedule, text="失败自动重试并补采最近3天").pack(side="left", padx=(12, 8))
+        ttk.Button(schedule, text="保存定时任务", command=self.save_schedule).pack(side="left")
 
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=12)
-        self.start_button = ttk.Button(actions, text="开始监测", style="Accent.TButton", command=self.start_monitoring)
+        self.start_button = ttk.Button(actions, text="开始监测并生成日报", style="Accent.TButton", command=self.start_monitoring)
         self.start_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="停止", command=self.stop_monitoring, state="disabled")
         self.stop_button.pack(side="left", padx=8)
         self.open_report_button = ttk.Button(actions, text="打开最新报表", command=self.open_last_report, state="disabled")
         self.open_report_button.pack(side="left", padx=(0, 8))
+        self.open_dashboard_button = ttk.Button(actions, text="打开数据看板", command=self.open_dashboard)
+        self.open_dashboard_button.pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="打开报表目录", command=self.open_output_dir).pack(side="left")
         ttk.Button(actions, text="环境检查", command=self.show_self_check).pack(side="right")
 
@@ -525,6 +695,36 @@ class OpinionMonitorApp:
         if self.last_output and self.last_output.exists():
             os.startfile(str(self.last_output))
 
+    def open_dashboard(self) -> None:
+        from tkinter import messagebox
+
+        dashboard = self.last_dashboard or self.paths["dashboard"]
+        if dashboard.exists():
+            os.startfile(str(dashboard))
+        else:
+            messagebox.showinfo("数据看板", "完成一次监测后会自动生成本地数据看板。", parent=self.root)
+
+    def save_schedule(self) -> None:
+        from tkinter import messagebox
+
+        try:
+            settings, _ = self._collect_settings()
+            configure_daily_schedule(
+                bool(settings["schedule_enabled"]),
+                str(settings["schedule_time"]),
+            )
+            save_json(self.paths["settings"], settings)
+            self.settings = settings
+        except Exception as exc:
+            messagebox.showerror("定时任务", f"保存失败：\n{exc}", parent=self.root)
+            return
+        state = "已启用" if settings["schedule_enabled"] else "已关闭"
+        messagebox.showinfo(
+            "定时任务",
+            f"每日监测{state}。电脑需保持开机并登录 Windows。",
+            parent=self.root,
+        )
+
     def show_self_check(self) -> None:
         from tkinter import messagebox
 
@@ -556,6 +756,7 @@ class OpinionMonitorApp:
             "supplemental_videos": "\n".join(supplemental_videos),
             "output_dir": str(output_dir),
             "enable_ocr": bool(self.ocr_var.get()),
+            "enable_speech": bool(self.speech_var.get()),
             "get_comments": bool(self.comments_var.get()),
             "include_replies": bool(self.replies_var.get()),
             "max_videos": int(self.settings.get("max_videos", 100)),
@@ -563,8 +764,17 @@ class OpinionMonitorApp:
             "ocr_max_images": int(self.settings.get("ocr_max_images", 35)),
             "video_ocr_max_frames": int(self.settings.get("video_ocr_max_frames", 6)),
             "watch_max_posts": int(self.settings.get("watch_max_posts", 36)),
+            "speech_model": str(self.settings.get("speech_model", "tiny")),
+            "speech_max_videos": int(self.settings.get("speech_max_videos", 12)),
+            "deduplicate": bool(self.settings.get("deduplicate", True)),
+            "run_retries": int(self.settings.get("run_retries", 2)),
+            "schedule_enabled": bool(self.schedule_var.get()),
+            "schedule_time": self.schedule_time_var.get().strip(),
+            "backfill_days": int(self.settings.get("backfill_days", 3)),
             "license_accepted": LICENSE_ACCEPTED_VERSION,
         }
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", settings["schedule_time"]):
+            raise ValueError("定时时间必须为 HH:MM，例如 08:30。")
         return settings, watch_accounts
 
     def start_monitoring(self) -> None:
@@ -579,24 +789,9 @@ class OpinionMonitorApp:
             return
         save_json(self.paths["settings"], settings)
         self.settings = settings
-        keywords = normalize_keywords(settings["keywords"])
-        output_path = next_report_path(Path(settings["output_dir"]), settings["opinion_date"], keywords)
-        job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
-        job_path = self.paths["jobs"] / f"{job_id}.json"
-        log_path = self.paths["logs"] / f"{job_id}.log"
-        status_path = self.paths["jobs"] / f"{job_id}.status.json"
-        stop_path = self.paths["jobs"] / f"{job_id}.stop"
-        job = {
-            **settings,
-            "keywords": keywords,
-            "watch_accounts": watch_accounts,
-            "supplemental_videos": normalize_video_entries(settings["supplemental_videos"]),
-            "output_path": str(output_path),
-            "log_path": str(log_path),
-            "status_path": str(status_path),
-            "stop_path": str(stop_path),
-        }
-        save_json(job_path, job)
+        job_path, job = create_job(settings, watch_accounts, self.paths)
+        log_path = Path(job["log_path"])
+        stop_path = Path(job["stop_path"])
         if stop_path.exists():
             stop_path.unlink()
 
@@ -665,11 +860,18 @@ class OpinionMonitorApp:
         output_path = Path(self.current_job["output_path"])
         if state == "completed" and output_path.exists():
             self.last_output = output_path
+            dashboard_path = Path(status.get("dashboard_path") or self.current_job.get("dashboard_path", ""))
+            if dashboard_path.exists():
+                self.last_dashboard = dashboard_path
             self.status_var.set("监测完成")
             self.open_report_button.configure(state="normal")
             from tkinter import messagebox
 
-            messagebox.showinfo("监测完成", f"Excel 已生成：\n{output_path}", parent=self.root)
+            messagebox.showinfo(
+                "监测完成",
+                f"日报已生成：\n{output_path}\n\n本地数据看板也已更新。",
+                parent=self.root,
+            )
         elif state == "cancelled" or return_code == 130:
             self.status_var.set("已停止")
         else:
@@ -724,11 +926,14 @@ class OpinionMonitorApp:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--scheduled-run", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--self-test-report", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.worker:
         return run_worker(args.worker)
+    if args.scheduled_run:
+        return run_scheduled()
     if args.self_test:
         errors = runtime_self_check()
         if args.self_test_report:

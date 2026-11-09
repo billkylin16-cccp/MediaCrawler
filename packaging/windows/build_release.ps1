@@ -3,7 +3,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "0.2.1-beta.1",
+    [string]$Version = "0.3.0-beta.1",
     [string]$InnoCompiler = "",
     [switch]$SkipInstaller
 )

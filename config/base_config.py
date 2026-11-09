@@ -112,6 +112,15 @@ DOUYIN_OPINION_OCR_MAX_IMAGES = 35
 DOUYIN_OPINION_VIDEO_OCR_MAX_FRAMES = 6  # sampled frames for supplemental/watch videos
 DOUYIN_OPINION_WATCH_MAX_POSTS = 36  # per account; date filtering stops older pages early
 DOUYIN_OPINION_SCOPE = "all"  # all = keyword search + watchlist; watch_only = watchlist only
+DOUYIN_OPINION_HISTORY_DB = ""  # local SQLite history used for incremental deduplication
+DOUYIN_OPINION_DEDUPLICATE = False
+DOUYIN_OPINION_DASHBOARD_OUTPUT = ""  # local HTML dashboard path
+DOUYIN_OPINION_ENABLE_SPEECH = False  # local faster-whisper transcription
+DOUYIN_OPINION_SPEECH_MODEL = "tiny"
+DOUYIN_OPINION_SPEECH_MODEL_DIR = ""
+DOUYIN_OPINION_SPEECH_MAX_VIDEOS = 12
+DOUYIN_NAVIGATION_RETRIES = 3
+DOUYIN_NAVIGATION_TIMEOUT_MS = 45_000
 
 # Browser file configuration cached by the user's browser
 USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name

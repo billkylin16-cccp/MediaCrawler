@@ -28,6 +28,9 @@ from typing import Any, Dict, Iterable, List, Optional
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from tools.douyin_image_ocr import OcrPageResult
+from tools.douyin_opinion_analysis import AnalysisResult, OpinionAnalyzer
+from tools.douyin_opinion_dashboard import write_dashboard
+from tools.douyin_opinion_history import OpinionHistory
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -130,6 +133,9 @@ class DouyinOpinionReport:
         target_date: str | date | None = None,
         output_path: str | Path | None = None,
         match: str = "all",
+        history_path: str | Path | None = None,
+        deduplicate: bool = False,
+        dashboard_path: str | Path | None = None,
     ) -> None:
         self.keywords = tuple(item.strip() for item in keywords if item and item.strip())
         if not self.keywords:
@@ -148,6 +154,12 @@ class DouyinOpinionReport:
             )
         self._videos: Dict[str, VideoRecord] = {}
         self._comments: Dict[str, CommentRecord] = {}
+        self._analysis: Dict[str, AnalysisResult] = {}
+        self._history = OpinionHistory(history_path) if history_path else None
+        self._seen_keys = self._history.seen_keys() if self._history and deduplicate else set()
+        self._deduplicate = bool(deduplicate)
+        self.duplicate_count = 0
+        self.dashboard_path = Path(dashboard_path) if dashboard_path else None
 
     def _matched_keywords(self, text: str) -> tuple[str, ...]:
         folded_text = text.casefold()
@@ -196,6 +208,9 @@ class DouyinOpinionReport:
         hits = self._matched_keywords(combined_text)
         if not created_at or created_at.date() != self.target_date or not self._matches(hits):
             return False
+        if self._deduplicate and f"video:{aweme_id}" in self._seen_keys:
+            self.duplicate_count += 1
+            return False
         author = aweme.get("author") or {}
         account = _excel_safe_text(author.get("nickname")) or "未知账号"
         self._videos[aweme_id] = VideoRecord(
@@ -220,6 +235,9 @@ class DouyinOpinionReport:
             comment_key = f"{aweme_id}:{comment_id}"
             if not comment_id or comment_key in self._comments:
                 continue
+            if self._deduplicate and f"comment:{comment_key}" in self._seen_keys:
+                self.duplicate_count += 1
+                continue
             created_at = _to_china_datetime(comment.get("create_time"))
             if not created_at or created_at.date() != self.target_date:
                 continue
@@ -238,6 +256,13 @@ class DouyinOpinionReport:
     def _time_text(value: datetime) -> str:
         return value.strftime("%Y-%m-%d %H:%M")
 
+    @staticmethod
+    def _recognized_page_label(page: OcrPageResult) -> str:
+        if page.source == "audio":
+            return "语音"
+        suffix = "帧" if page.source == "video" else "张"
+        return f"第{page.page}{suffix}"
+
     def _rows(self) -> list[list[Any]]:
         rows: list[list[Any]] = []
         videos = sorted(self._videos.values(), key=lambda item: (item.created_at, item.aweme_id))
@@ -246,6 +271,7 @@ class DouyinOpinionReport:
             comments_by_video.setdefault(comment.aweme_id, []).append(comment)
 
         for video in videos:
+            analysis = self._analysis.get(video.aweme_id)
             matched = "、".join(video.keywords) or "搜索命中"
             source_parts: list[str] = []
             if video.description_keywords:
@@ -268,6 +294,13 @@ class DouyinOpinionReport:
                 source_parts.append(
                     "视频OCR第" + "、".join(str(page) for page in video_hit_frames) + "帧"
                 )
+            speech_hits = [
+                page.page
+                for page in video.ocr_pages
+                if page.source == "audio" and self._matched_keywords(page.text)
+            ]
+            if speech_hits:
+                source_parts.append("视频语音识别")
             if not source_parts:
                 source_parts.append("搜索命中")
 
@@ -275,14 +308,20 @@ class DouyinOpinionReport:
             if video.ocr_pages:
                 ocr_text = "｜".join(
                     (
-                        f"第{page.page}{'帧' if page.source == 'video' else '张'}："
+                        f"{self._recognized_page_label(page)}："
                         f"{page.text[:1000]}"
                     )
                     for page in video.ocr_pages
                 )
-                label = "视频抽帧OCR" if any(
-                    page.source == "video" for page in video.ocr_pages
-                ) else "图片OCR"
+                sources = {page.source for page in video.ocr_pages}
+                if len(sources) > 1:
+                    label = "多模态识别"
+                elif "audio" in sources:
+                    label = "视频语音识别"
+                elif "video" in sources:
+                    label = "视频抽帧OCR"
+                else:
+                    label = "图片OCR"
                 content_parts.append(f"【{label}】{ocr_text[:12000]}")
             content = "\n".join(content_parts)
 
@@ -296,6 +335,14 @@ class DouyinOpinionReport:
                 info_parts.append(f"发现方式：{video.discovery_source}")
             if video.watch_account:
                 info_parts.append(f"重点账号：{video.watch_account}")
+            if analysis:
+                info_parts.extend(
+                    [
+                        f"事件：{analysis.event_id}",
+                        f"风险：{analysis.risk_level}（{analysis.risk_score}分）",
+                        f"研判：{'；'.join(analysis.risk_reasons)}",
+                    ]
+                )
             info_parts.append(f"链接：{video.url}")
             rows.append([
                 None,
@@ -315,8 +362,130 @@ class DouyinOpinionReport:
             row[0] = index
         return rows
 
+    def _prepare_analysis(self) -> None:
+        comments_by_video: Dict[str, list[dict[str, Any]]] = {}
+        for comment in self._comments.values():
+            comments_by_video.setdefault(comment.aweme_id, []).append(
+                {"content": comment.content, "account": comment.account}
+            )
+        videos = []
+        for video in self._videos.values():
+            recognized_text = " ".join(page.text for page in video.ocr_pages)
+            videos.append(
+                {
+                    "aweme_id": video.aweme_id,
+                    "account": video.account,
+                    "content": " ".join([video.content, recognized_text]).strip(),
+                    "watch_account": video.watch_account,
+                }
+            )
+        self._analysis = OpinionAnalyzer(self.keywords).analyze(videos, comments_by_video)
+
+    def _write_analysis_sheets(self, workbook: Workbook) -> None:
+        event_sheet = workbook.create_sheet("事件分析")
+        event_headers = ["事件编号", "风险等级", "风险分值", "账号", "摘要", "风险依据", "视频链接"]
+        for column, header in enumerate(event_headers, start=1):
+            cell = event_sheet.cell(1, column, header)
+            cell.font = Font(name="Microsoft YaHei", bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+        for row_number, video in enumerate(
+            sorted(self._videos.values(), key=lambda item: (item.created_at, item.aweme_id)),
+            start=2,
+        ):
+            analysis = self._analysis[video.aweme_id]
+            values = [
+                analysis.event_id,
+                analysis.risk_level,
+                analysis.risk_score,
+                video.account,
+                analysis.summary,
+                "；".join(analysis.risk_reasons),
+                video.url,
+            ]
+            for column, value in enumerate(values, start=1):
+                cell = event_sheet.cell(row_number, column, value)
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if column == 2:
+                    color = {"高": "C00000", "中": "F4B183", "低": "70AD47"}[analysis.risk_level]
+                    cell.fill = PatternFill("solid", fgColor=color)
+                    cell.font = Font(name="Microsoft YaHei", color="FFFFFF", bold=True)
+        for column, width in enumerate((12, 12, 12, 24, 60, 50, 52), start=1):
+            event_sheet.column_dimensions[chr(64 + column)].width = width
+        event_sheet.freeze_panes = "A2"
+
+        summary_sheet = workbook.create_sheet("统计摘要")
+        risk_counts = {"高": 0, "中": 0, "低": 0}
+        for result in self._analysis.values():
+            risk_counts[result.risk_level] += 1
+        summary_rows = [
+            ("监测日期", self.target_date.isoformat()),
+            ("关键词", "、".join(self.keywords)),
+            ("新增视频", len(self._videos)),
+            ("新增评论", len(self._comments)),
+            ("跨日期重复项", self.duplicate_count),
+            ("高风险事件", risk_counts["高"]),
+            ("中风险事件", risk_counts["中"]),
+            ("低风险事件", risk_counts["低"]),
+        ]
+        for row, (label, value) in enumerate(summary_rows, start=1):
+            summary_sheet.cell(row, 1, label).font = Font(name="Microsoft YaHei", bold=True)
+            summary_sheet.cell(row, 2, value)
+        summary_sheet.column_dimensions["A"].width = 22
+        summary_sheet.column_dimensions["B"].width = 60
+
+    def _history_items(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        comments_by_video: Dict[str, list[CommentRecord]] = {}
+        for comment in self._comments.values():
+            comments_by_video.setdefault(comment.aweme_id, []).append(comment)
+        for video in self._videos.values():
+            analysis = self._analysis[video.aweme_id]
+            source = "、".join(sorted({page.source for page in video.ocr_pages}))
+            items.append(
+                {
+                    "item_key": f"video:{video.aweme_id}",
+                    "kind": "video",
+                    "item_id": video.aweme_id,
+                    "aweme_id": video.aweme_id,
+                    "account": video.account,
+                    "content": video.content,
+                    "created_at": video.created_at.isoformat(),
+                    "report_date": self.target_date.isoformat(),
+                    "keywords": list(video.keywords),
+                    "source": source or video.discovery_source,
+                    "risk_level": analysis.risk_level,
+                    "risk_score": analysis.risk_score,
+                    "event_id": analysis.event_id,
+                    "summary": analysis.summary,
+                    "url": video.url,
+                    "payload": {"risk_reasons": list(analysis.risk_reasons)},
+                }
+            )
+            for comment in comments_by_video.get(video.aweme_id, []):
+                items.append(
+                    {
+                        "item_key": f"comment:{video.aweme_id}:{comment.comment_id}",
+                        "kind": "comment",
+                        "item_id": comment.comment_id,
+                        "aweme_id": video.aweme_id,
+                        "account": comment.account,
+                        "content": comment.content,
+                        "created_at": comment.created_at.isoformat(),
+                        "report_date": self.target_date.isoformat(),
+                        "keywords": list(comment.keywords),
+                        "source": "评论",
+                        "risk_level": analysis.risk_level,
+                        "risk_score": analysis.risk_score,
+                        "event_id": analysis.event_id,
+                        "summary": analysis.summary,
+                        "url": video.url,
+                    }
+                )
+        return items
+
     def flush(self) -> Path:
         """Write the requested single-sheet Excel report, including an empty report."""
+        self._prepare_analysis()
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook = Workbook()
         worksheet = workbook.active
@@ -364,10 +533,15 @@ class DouyinOpinionReport:
             worksheet.column_dimensions[column].width = width
         worksheet.freeze_panes = "A3"
         worksheet.auto_filter.ref = f"A2:D{max(2, worksheet.max_row)}"
+        self._write_analysis_sheets(workbook)
         try:
             workbook.save(self.output_path)
         finally:
             workbook.close()
+        if self._history:
+            self._history.save_items(self._history_items())
+            if self.dashboard_path:
+                write_dashboard(self._history.path, self.dashboard_path)
         return self.output_path
 
     @property

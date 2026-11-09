@@ -6,7 +6,7 @@ on:
       version:
         description: Installer version
         required: true
-        default: 0.2.1-beta.1
+        default: 0.3.0-beta.1
   push:
     tags:
       - "v*"
@@ -41,7 +41,7 @@ jobs:
 
       - name: Test
         shell: powershell
-        run: uv run pytest -q tests/test_douyin_opinion_app.py tests/test_douyin_watchlist_ocr.py tests/test_douyin_opinion_report.py tests/test_douyin_no_user_info.py tests/test_cmd_arg_douyin_opinion.py
+        run: uv run pytest -q tests/test_douyin_opinion_app.py tests/test_douyin_opinion_features.py tests/test_douyin_watchlist_ocr.py tests/test_douyin_opinion_report.py tests/test_douyin_no_user_info.py tests/test_cmd_arg_douyin_opinion.py
 
       - name: Build installer
         shell: powershell

@@ -38,9 +38,10 @@ from base.base_crawler import AbstractCrawler
 from store.douyin_opinion_report import DouyinOpinionReport
 from tools import utils
 from tools.cdp_browser import CDPBrowserManager
-from tools.douyin_image_ocr import DouyinImageOcr
+from tools.douyin_image_ocr import DouyinImageOcr, OcrPageResult
 from tools.douyin_media import extract_note_image_list, extract_video_download_url
 from tools.runtime_paths import browser_data_dir
+from tools.douyin_speech import DouyinSpeechTranscriber
 from tools.douyin_watchlist import (
     choose_exact_user,
     iter_user_candidates,
@@ -74,6 +75,8 @@ class DouYinCrawler(AbstractCrawler):
         self.ip_proxy_pool = None  # Proxy IP pool for automatic proxy refresh
         self.opinion_report: Optional[DouyinOpinionReport] = None
         self.image_ocr: Optional[DouyinImageOcr] = None
+        self.speech_transcriber: Optional[DouyinSpeechTranscriber] = None
+        self._speech_videos_processed = 0
         self._processed_opinion_awemes: set[str] = set()
         self._watch_account_cache_path = browser_data_dir() / "douyin_watch_accounts.json"
 
@@ -92,10 +95,22 @@ class DouYinCrawler(AbstractCrawler):
                 target_date=config.DOUYIN_OPINION_REPORT_DATE,
                 output_path=config.DOUYIN_OPINION_REPORT_OUTPUT or None,
                 match=config.DOUYIN_OPINION_MATCH,
+                history_path=config.DOUYIN_OPINION_HISTORY_DB or None,
+                deduplicate=config.DOUYIN_OPINION_DEDUPLICATE,
+                dashboard_path=config.DOUYIN_OPINION_DASHBOARD_OUTPUT or None,
             )
             if config.DOUYIN_OPINION_ENABLE_OCR:
                 self.image_ocr = DouyinImageOcr(
                     max_images=config.DOUYIN_OPINION_OCR_MAX_IMAGES
+                )
+            if config.DOUYIN_OPINION_ENABLE_SPEECH:
+                model_dir = (
+                    config.DOUYIN_OPINION_SPEECH_MODEL_DIR
+                    or str(browser_data_dir().parent / "models" / "faster-whisper")
+                )
+                self.speech_transcriber = DouyinSpeechTranscriber(
+                    model_name=config.DOUYIN_OPINION_SPEECH_MODEL,
+                    model_dir=model_dir,
                 )
         playwright_proxy_format, httpx_proxy_format = None, None
         if config.ENABLE_IP_PROXY:
@@ -131,7 +146,7 @@ class DouYinCrawler(AbstractCrawler):
                 await self.browser_context.add_init_script(path="libs/stealth.min.js")
 
             self.context_page = await self.browser_context.new_page()
-            await self.context_page.goto(self.index_url)
+            await self.open_index_with_retry()
 
             self.dy_client = await self.create_douyin_client(httpx_proxy_format)
             if not await self.dy_client.pong(browser_context=self.browser_context):
@@ -167,10 +182,55 @@ class DouYinCrawler(AbstractCrawler):
                 output_path = self.opinion_report.flush()
                 utils.logger.info(
                     f"[DouYinCrawler.start] Opinion report saved: {output_path} "
-                    f"(videos={self.opinion_report.video_count}, comments={self.opinion_report.comment_count})"
+                    f"(videos={self.opinion_report.video_count}, comments={self.opinion_report.comment_count}, "
+                    f"duplicates={self.opinion_report.duplicate_count})"
                 )
 
             utils.logger.info("[DouYinCrawler.start] Douyin Crawler finished ...")
+
+    async def open_index_with_retry(self) -> None:
+        """Open Douyin without treating slow background resources as a fatal error."""
+        attempts = max(1, int(config.DOUYIN_NAVIGATION_RETRIES))
+        timeout = max(10_000, int(config.DOUYIN_NAVIGATION_TIMEOUT_MS))
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                await self.context_page.goto(
+                    self.index_url,
+                    wait_until="domcontentloaded",
+                    timeout=timeout,
+                )
+                utils.logger.info(
+                    f"[DouYinCrawler] 抖音首页已打开（第 {attempt}/{attempts} 次）"
+                )
+                return
+            except PlaywrightTimeoutError as exc:
+                last_error = exc
+                ready_state = ""
+                try:
+                    ready_state = str(
+                        await self.context_page.evaluate("document.readyState")
+                    )
+                except Exception:
+                    pass
+                if "douyin.com" in self.context_page.url and ready_state in {
+                    "interactive",
+                    "complete",
+                }:
+                    utils.logger.warning(
+                        "[DouYinCrawler] 首页后台资源加载超时，但页面主体可用，继续运行"
+                    )
+                    return
+                if attempt < attempts:
+                    delay = min(10, attempt * 3)
+                    utils.logger.warning(
+                        f"[DouYinCrawler] 首页打开超时，第 {attempt}/{attempts} 次，"
+                        f"{delay} 秒后重试"
+                    )
+                    await asyncio.sleep(delay)
+        raise PlaywrightTimeoutError(
+            f"抖音首页连续 {attempts} 次打开超时，请检查网络后重试"
+        ) from last_error
 
     async def search(self) -> None:
         utils.logger.info("[DouYinCrawler.search] Begin search douyin keywords")
@@ -351,7 +411,7 @@ class DouYinCrawler(AbstractCrawler):
                 detail = fetched_detail
                 image_urls = extract_note_image_list(detail)
 
-        ocr_pages = []
+        ocr_pages: list[OcrPageResult] = []
         if self.image_ocr and image_urls:
             try:
                 ocr_pages = await self.image_ocr.recognize_urls(
@@ -366,29 +426,66 @@ class DouYinCrawler(AbstractCrawler):
                 utils.logger.warning(
                     f"[DouYinCrawler] OCR failed for {aweme_id}; continuing with description: {exc}"
                 )
-        elif (
-            self.image_ocr
-            and discovery_source in {"指定链接补漏", "重点账号复查"}
-        ):
+        elif not image_urls:
             video_url = extract_video_download_url(detail)
-            if video_url:
+            priority_video = discovery_source in {"指定链接补漏", "重点账号复查"}
+            needs_frame_ocr = bool(self.image_ocr and priority_video)
+            needs_speech = bool(
+                self.speech_transcriber
+                and self._speech_videos_processed
+                < int(config.DOUYIN_OPINION_SPEECH_MAX_VIDEOS)
+            )
+            if (needs_frame_ocr or needs_speech) and not video_url:
+                fetched_detail = await self.fetch_opinion_aweme_detail(aweme_id)
+                if fetched_detail:
+                    detail = fetched_detail
+                    video_url = extract_video_download_url(detail)
+            media_content: Optional[bytes] = None
+            if video_url and (needs_frame_ocr or needs_speech):
                 try:
-                    async def fetch_video_media(url: str) -> Optional[bytes]:
-                        return await self.fetch_opinion_video_media(url, aweme_id)
-
-                    ocr_pages = await self.image_ocr.recognize_video_url(
-                        video_url,
-                        fetch_video_media,
+                    media_content = await self.fetch_opinion_video_media(video_url, aweme_id)
+                except Exception as exc:
+                    utils.logger.warning(
+                        f"[DouYinCrawler] Video download failed for {aweme_id}: {exc}"
+                    )
+            if media_content and needs_frame_ocr and self.image_ocr:
+                try:
+                    frame_pages = await self.image_ocr.recognize_video_bytes(
+                        media_content,
                         max_frames=config.DOUYIN_OPINION_VIDEO_OCR_MAX_FRAMES,
                     )
+                    ocr_pages.extend(frame_pages)
                     utils.logger.info(
                         f"[DouYinCrawler] Video-frame OCR completed for {aweme_id}: "
-                        f"text_frames={len(ocr_pages)}"
+                        f"text_frames={len(frame_pages)}"
                     )
                 except Exception as exc:
                     utils.logger.warning(
                         f"[DouYinCrawler] Video-frame OCR failed for {aweme_id}; "
                         f"continuing with description: {exc}"
+                    )
+            if media_content and needs_speech and self.speech_transcriber:
+                self._speech_videos_processed += 1
+                try:
+                    speech = await self.speech_transcriber.transcribe_bytes(media_content)
+                    if speech.text:
+                        ocr_pages.append(
+                            OcrPageResult(
+                                page=1,
+                                text=speech.text,
+                                confidence=None,
+                                source="audio",
+                            )
+                        )
+                    utils.logger.info(
+                        f"[DouYinCrawler] Speech transcription completed for {aweme_id}: "
+                        f"characters={len(speech.text)}"
+                    )
+                except Exception as exc:
+                    self.speech_transcriber = None
+                    utils.logger.warning(
+                        f"[DouYinCrawler] Speech transcription unavailable; "
+                        f"continuing without it: {exc}"
                     )
 
         return self.opinion_report.add_video(

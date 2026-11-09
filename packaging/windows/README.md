@@ -11,8 +11,10 @@ of commercial distribution rights.
 - Inno Setup 6 (only required for the final Setup.exe)
 
 End users do not need any of those tools. The produced application contains its
-own Python runtime, Playwright-provided Node.js runtime, Chromium, OCR models, and
-application dependencies.
+own Python runtime, Playwright-provided Node.js runtime, Chromium, OCR models,
+local speech-recognition runtime, SQLite history/dashboard support, and
+application dependencies. The small Whisper model is downloaded on first use
+and is cached under the user's local application-data directory.
 
 ## Build
 
@@ -40,4 +42,6 @@ sign both the application executable and the installer.
 Test on a clean Windows 10/11 x64 virtual machine without Python, Node.js, uv,
 Chrome, or an existing MediaCrawler checkout. Verify first-run license notice,
 QR login, persisted login, watchlist editing, both monitoring modes, image OCR,
-Excel generation, upgrade preservation, and uninstall behavior.
+speech transcription, navigation retry, scheduled-task registration, local
+history deduplication, dashboard/Excel generation, upgrade preservation, and
+uninstall behavior.

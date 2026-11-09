@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
 
 
 project_root = Path(SPEC).resolve().parents[2]
@@ -21,11 +21,30 @@ datas = [
 binaries = []
 hiddenimports = []
 
-for package_name in ("playwright", "rapidocr", "onnxruntime", "cv2", "openpyxl"):
+for package_name in (
+    "playwright",
+    "rapidocr",
+    "onnxruntime",
+    "cv2",
+    "openpyxl",
+):
     package_datas, package_binaries, package_hiddenimports = collect_all(package_name)
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_hiddenimports
+
+# Speech libraries contain native extensions and a few small runtime assets.
+# Avoid collect_all() here: it pulls unrelated Hugging Face CLI commands and
+# substantially inflates the installer.
+datas += collect_data_files("faster_whisper")
+binaries += collect_dynamic_libs("ctranslate2")
+hiddenimports += [
+    "faster_whisper",
+    "ctranslate2",
+    "av",
+    "tokenizers",
+    "huggingface_hub",
+]
 
 a = Analysis(
     [str(project_root / "douyin_opinion_app.py")],

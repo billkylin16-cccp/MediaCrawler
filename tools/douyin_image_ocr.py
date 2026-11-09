@@ -215,3 +215,17 @@ class DouyinImageOcr:
             content,
             max_frames,
         )
+
+    async def recognize_video_bytes(
+        self,
+        content: bytes,
+        max_frames: int = 6,
+    ) -> list[OcrPageResult]:
+        """Recognize already-downloaded media so OCR and speech can share bytes."""
+        if max_frames < 1 or not content:
+            return []
+        return await asyncio.to_thread(
+            self._recognize_video_bytes,
+            content,
+            max_frames,
+        )
