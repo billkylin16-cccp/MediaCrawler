@@ -103,8 +103,12 @@ SAVE_DATA_PATH = ""
 # multi-sheet export. It is intended for small, authorized, date-bounded work.
 ENABLE_DOUYIN_OPINION_REPORT = False
 DOUYIN_OPINION_REPORT_DATE = ""  # YYYY-MM-DD, blank uses the current China date
+DOUYIN_OPINION_START_DATETIME = ""  # YYYY-MM-DD HH:MM, blank uses report date 00:00
+DOUYIN_OPINION_END_DATETIME = ""  # YYYY-MM-DD HH:MM, blank uses report date 23:59
 DOUYIN_OPINION_REPORT_OUTPUT = ""  # blank uses <M.DD>抖音舆论检测.xlsx
 DOUYIN_OPINION_MATCH = "all"  # all = every keyword must appear; any = one is enough
+DOUYIN_OPINION_CONTENT_KEYWORDS = []  # separate from discovery queries in desktop mode
+DOUYIN_OPINION_LOCATIONS = []  # editable POI/address/location terms; included independently
 DOUYIN_OPINION_WATCH_ACCOUNTS = []  # Douyin IDs/profile URLs checked before keyword search
 DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS = []  # Video URLs/IDs fetched directly to cover search-index gaps
 DOUYIN_OPINION_ENABLE_OCR = True  # OCR text in image-carousel posts

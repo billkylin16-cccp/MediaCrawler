@@ -323,6 +323,30 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
                 rich_help_panel="Douyin Opinion Monitor",
             ),
         ] = config.DOUYIN_OPINION_REPORT_DATE,
+        opinion_start_datetime: Annotated[
+            str,
+            typer.Option(
+                "--opinion_start_datetime",
+                help="Custom monitoring start in China time (YYYY-MM-DD HH:MM)",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = config.DOUYIN_OPINION_START_DATETIME,
+        opinion_end_datetime: Annotated[
+            str,
+            typer.Option(
+                "--opinion_end_datetime",
+                help="Custom monitoring end in China time (YYYY-MM-DD HH:MM)",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = config.DOUYIN_OPINION_END_DATETIME,
+        opinion_locations: Annotated[
+            str,
+            typer.Option(
+                "--opinion_locations",
+                help="POI/address/location terms to include independently, separated by commas",
+                rich_help_panel="Douyin Opinion Monitor",
+            ),
+        ] = ",".join(config.DOUYIN_OPINION_LOCATIONS),
         opinion_output: Annotated[
             str,
             typer.Option(
@@ -450,6 +474,9 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         opinion_supplemental_video_list = [
             item.strip() for item in opinion_supplemental_videos.split(",") if item.strip()
         ] if opinion_supplemental_videos else []
+        opinion_location_list = [
+            item.strip() for item in opinion_locations.split(",") if item.strip()
+        ] if opinion_locations else []
 
         # override global config
         config.PLATFORM = platform.value
@@ -469,6 +496,16 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
         config.SAVE_DATA_PATH = save_data_path
         config.ENABLE_DOUYIN_OPINION_REPORT = enable_douyin_opinion_report
         config.DOUYIN_OPINION_REPORT_DATE = opinion_date
+        config.DOUYIN_OPINION_START_DATETIME = opinion_start_datetime
+        config.DOUYIN_OPINION_END_DATETIME = opinion_end_datetime
+        config.DOUYIN_OPINION_CONTENT_KEYWORDS = [
+            item.strip() for item in keywords.split(",") if item.strip()
+        ]
+        config.DOUYIN_OPINION_LOCATIONS = opinion_location_list
+        if enable_douyin_opinion_report and opinion_location_list:
+            config.KEYWORDS = ",".join(
+                dict.fromkeys([*config.DOUYIN_OPINION_CONTENT_KEYWORDS, *opinion_location_list])
+            )
         config.DOUYIN_OPINION_REPORT_OUTPUT = opinion_output
         config.DOUYIN_OPINION_MATCH = opinion_match.value
         config.DOUYIN_OPINION_WATCH_ACCOUNTS = opinion_watch_account_list
@@ -528,6 +565,9 @@ async def parse_cmd(argv: Optional[Sequence[str]] = None):
             save_data_option=config.SAVE_DATA_OPTION,
             douyin_opinion_report=config.ENABLE_DOUYIN_OPINION_REPORT,
             opinion_date=config.DOUYIN_OPINION_REPORT_DATE,
+            opinion_start_datetime=config.DOUYIN_OPINION_START_DATETIME,
+            opinion_end_datetime=config.DOUYIN_OPINION_END_DATETIME,
+            opinion_locations=config.DOUYIN_OPINION_LOCATIONS,
             opinion_output=config.DOUYIN_OPINION_REPORT_OUTPUT,
             opinion_match=config.DOUYIN_OPINION_MATCH,
             opinion_watch_accounts=config.DOUYIN_OPINION_WATCH_ACCOUNTS,

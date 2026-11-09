@@ -213,11 +213,17 @@ class OpinionHistory:
                 for row in connection.execute(
                     """
                     SELECT report_date, kind, account, content, risk_level,
-                           risk_score, event_id, summary, url
+                           risk_score, event_id, summary, url, payload
                     FROM items ORDER BY created_at DESC LIMIT 80
                     """
                 )
             ]
+            for row in recent:
+                try:
+                    item_payload = json.loads(str(row.pop("payload", "{}") or "{}"))
+                except json.JSONDecodeError:
+                    item_payload = {}
+                row["location"] = "、".join(item_payload.get("locations", []))
             runs = [
                 dict(row)
                 for row in connection.execute(
@@ -228,4 +234,3 @@ class OpinionHistory:
                 )
             ]
         return {"daily": daily, "risk": risk, "recent": recent, "runs": runs}
-

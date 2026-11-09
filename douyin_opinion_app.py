@@ -13,14 +13,14 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 
 APP_NAME = "抖音舆情监测"
 APP_ID = "DouyinOpinionMonitor"
-APP_VERSION = "0.3.0-beta.2"
+APP_VERSION = "0.3.1-beta.1"
 LICENSE_ACCEPTED_VERSION = "1.1"
 SCHEDULE_TASK_NAME = "DouyinOpinionMonitor每日监测"
 
@@ -138,9 +138,25 @@ def safe_file_component(value: str, max_length: int = 36) -> str:
     return (safe or "关键词")[:max_length].rstrip("_")
 
 
-def next_report_path(directory: Path, opinion_date: str, keywords: list[str]) -> Path:
-    parsed = datetime.strptime(opinion_date, "%Y-%m-%d")
-    base = f"{parsed.month}.{parsed.day:02d}抖音舆论检测"
+def next_report_path(
+    directory: Path,
+    opinion_date: str,
+    keywords: list[str],
+    end_datetime: str | None = None,
+) -> Path:
+    parsed = datetime.strptime(opinion_date[:10], "%Y-%m-%d")
+    end_parsed = (
+        datetime.strptime(end_datetime[:10], "%Y-%m-%d")
+        if end_datetime
+        else parsed
+    )
+    if parsed.date() == end_parsed.date():
+        base = f"{parsed.month}.{parsed.day:02d}抖音舆论检测"
+    else:
+        base = (
+            f"{parsed.month}.{parsed.day:02d}-"
+            f"{end_parsed.month}.{end_parsed.day:02d}抖音舆论检测"
+        )
     candidate = directory / f"{base}.xlsx"
     if not candidate.exists():
         return candidate
@@ -152,9 +168,13 @@ def next_report_path(directory: Path, opinion_date: str, keywords: list[str]) ->
 
 
 def load_settings(path: Path) -> dict[str, Any]:
+    today = datetime.now().strftime("%Y-%m-%d")
     defaults: dict[str, Any] = {
         "keywords": "西陶",
-        "opinion_date": datetime.now().strftime("%Y-%m-%d"),
+        "locations": "西陶",
+        "opinion_date": today,
+        "start_datetime": f"{today} 00:00",
+        "end_datetime": f"{today} 23:59",
         "mode": "all",
         "match": "all",
         "supplemental_videos": "",
@@ -185,6 +205,11 @@ def load_settings(path: Path) -> dict[str, Any]:
         return defaults
     if isinstance(loaded, dict):
         defaults.update(loaded)
+        legacy_date = str(loaded.get("opinion_date") or today)
+        if "start_datetime" not in loaded:
+            defaults["start_datetime"] = f"{legacy_date} 00:00"
+        if "end_datetime" not in loaded:
+            defaults["end_datetime"] = f"{legacy_date} 23:59"
     return defaults
 
 
@@ -281,7 +306,8 @@ async def _run_crawler_job(job: dict[str, Any]) -> str:
     config.PLATFORM = "dy"
     config.LOGIN_TYPE = "qrcode"
     config.CRAWLER_TYPE = "search"
-    config.KEYWORDS = ",".join(job["keywords"])
+    discovery_terms = list(dict.fromkeys([*job["keywords"], *job.get("locations", [])]))
+    config.KEYWORDS = ",".join(discovery_terms)
     config.HEADLESS = False
     config.CDP_HEADLESS = False
     config.ENABLE_CDP_MODE = False
@@ -295,8 +321,12 @@ async def _run_crawler_job(job: dict[str, Any]) -> str:
     config.MAX_CONCURRENCY_NUM = 1
     config.ENABLE_DOUYIN_OPINION_REPORT = True
     config.DOUYIN_OPINION_REPORT_DATE = job["opinion_date"]
+    config.DOUYIN_OPINION_START_DATETIME = job["start_datetime"]
+    config.DOUYIN_OPINION_END_DATETIME = job["end_datetime"]
     config.DOUYIN_OPINION_REPORT_OUTPUT = job["output_path"]
     config.DOUYIN_OPINION_MATCH = job["match"]
+    config.DOUYIN_OPINION_CONTENT_KEYWORDS = list(job["keywords"])
+    config.DOUYIN_OPINION_LOCATIONS = list(job.get("locations", []))
     config.DOUYIN_OPINION_WATCH_ACCOUNTS = list(job["watch_accounts"])
     config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS = list(job.get("supplemental_videos", []))
     config.DOUYIN_OPINION_ENABLE_OCR = bool(job["enable_ocr"])
@@ -345,6 +375,10 @@ def run_worker(job_path: Path) -> int:
     from tools.douyin_opinion_history import OpinionHistory
 
     job = json.loads(job_path.read_text(encoding="utf-8"))
+    legacy_date = str(job.get("opinion_date") or datetime.now().strftime("%Y-%m-%d"))
+    job.setdefault("locations", [])
+    job.setdefault("start_datetime", f"{legacy_date} 00:00")
+    job.setdefault("end_datetime", f"{legacy_date} 23:59")
     log_path = Path(job["log_path"])
     status_path = Path(job["status_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -367,8 +401,12 @@ def run_worker(job_path: Path) -> int:
     max_attempts = max(1, min(6, int(job.get("run_retries", 2)) + 1))
     try:
         print(f"[{APP_NAME}] 版本 {APP_VERSION}", flush=True)
-        print(f"[{APP_NAME}] 关键词：{'、'.join(job['keywords'])}", flush=True)
-        print(f"[{APP_NAME}] 监测日期：{job['opinion_date']}", flush=True)
+        print(f"[{APP_NAME}] 关键词：{'、'.join(job['keywords']) or '（未设置）'}", flush=True)
+        print(f"[{APP_NAME}] 关键定位：{'、'.join(job.get('locations', [])) or '（未设置）'}", flush=True)
+        print(
+            f"[{APP_NAME}] 监测时间：{job['start_datetime']} 至 {job['end_datetime']}",
+            flush=True,
+        )
         print(f"[{APP_NAME}] 重点账号：{len(job['watch_accounts'])} 个", flush=True)
         import traceback
 
@@ -458,9 +496,27 @@ def create_job(
     paths: dict[str, Path],
     opinion_date: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    target_date = opinion_date or str(settings["opinion_date"])
+    configured_start = datetime.strptime(str(settings["start_datetime"]), "%Y-%m-%d %H:%M")
+    configured_end = datetime.strptime(str(settings["end_datetime"]), "%Y-%m-%d %H:%M")
+    if opinion_date:
+        target_day = date.fromisoformat(opinion_date)
+        start_datetime = datetime.combine(target_day, configured_start.time())
+        duration = configured_end - configured_start
+        if duration < timedelta(0):
+            duration = timedelta(hours=23, minutes=59)
+        end_datetime = start_datetime + duration
+    else:
+        start_datetime = configured_start
+        end_datetime = configured_end
+    target_date = start_datetime.date().isoformat()
     keywords = normalize_keywords(str(settings["keywords"]))
-    output_path = next_report_path(Path(settings["output_dir"]), target_date, keywords)
+    locations = normalize_keywords(str(settings.get("locations") or ""))
+    output_path = next_report_path(
+        Path(settings["output_dir"]),
+        start_datetime.strftime("%Y-%m-%d %H:%M"),
+        list(dict.fromkeys([*keywords, *locations])),
+        end_datetime.strftime("%Y-%m-%d %H:%M"),
+    )
     job_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     job_path = paths["jobs"] / f"{job_id}.json"
     job = {
@@ -468,6 +524,9 @@ def create_job(
         "run_id": job_id,
         "opinion_date": target_date,
         "keywords": keywords,
+        "locations": locations,
+        "start_datetime": start_datetime.strftime("%Y-%m-%d %H:%M"),
+        "end_datetime": end_datetime.strftime("%Y-%m-%d %H:%M"),
         "watch_accounts": watch_accounts,
         "supplemental_videos": normalize_video_entries(
             str(settings.get("supplemental_videos") or "")
@@ -524,12 +583,14 @@ class OpinionMonitorApp:
         self.settings = load_settings(self.paths["settings"])
         self.root = tk.Tk()
         self.root.title(f"{APP_NAME} {APP_VERSION}")
-        self.root.geometry("1020x820")
-        self.root.minsize(900, 680)
+        self.root.geometry("1080x900")
+        self.root.minsize(940, 740)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.keywords_var = tk.StringVar(value=str(self.settings["keywords"]))
-        self.date_var = tk.StringVar(value=str(self.settings["opinion_date"]))
+        self.locations_var = tk.StringVar(value=str(self.settings.get("locations", "西陶")))
+        self.start_datetime_var = tk.StringVar(value=str(self.settings["start_datetime"]))
+        self.end_datetime_var = tk.StringVar(value=str(self.settings["end_datetime"]))
         self.mode_var = tk.StringVar(value=self._label_for(MODE_LABELS, self.settings["mode"]))
         self.match_var = tk.StringVar(value=self._label_for(MATCH_LABELS, self.settings["match"]))
         self.supplemental_var = tk.StringVar(value=str(self.settings["supplemental_videos"]))
@@ -584,37 +645,45 @@ class OpinionMonitorApp:
 
         ttk.Label(form, text="关键词").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=5)
         ttk.Entry(form, textvariable=self.keywords_var).grid(row=0, column=1, sticky="ew", pady=5)
-        ttk.Label(form, text="多个关键词可用空格或逗号分隔").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="可手动编辑，多个用空格或逗号分隔").grid(row=0, column=2, sticky="w", padx=(10, 0))
 
-        ttk.Label(form, text="监测日期").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Entry(form, textvariable=self.date_var, width=18).grid(row=1, column=1, sticky="w", pady=5)
-        ttk.Button(form, text="今天", command=lambda: self.date_var.set(datetime.now().strftime("%Y-%m-%d"))).grid(row=1, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="关键定位").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.locations_var).grid(row=1, column=1, sticky="ew", pady=5)
+        ttk.Label(form, text="例：西陶、西陶镇；POI/地址/IP属地命中即收录").grid(row=1, column=2, sticky="w", padx=(10, 0))
 
-        ttk.Label(form, text="监测范围").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Combobox(form, textvariable=self.mode_var, values=list(MODE_LABELS), state="readonly").grid(row=2, column=1, sticky="ew", pady=5)
-        ttk.Button(form, text="编辑重点账号", command=self.open_watchlist).grid(row=2, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="监测开始").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.start_datetime_var, width=22).grid(row=2, column=1, sticky="w", pady=5)
+        ttk.Label(form, text="YYYY-MM-DD HH:MM").grid(row=2, column=2, sticky="w", padx=(10, 0))
 
-        ttk.Label(form, text="关键词规则").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Combobox(form, textvariable=self.match_var, values=list(MATCH_LABELS), state="readonly").grid(row=3, column=1, sticky="ew", pady=5)
-        ttk.Label(form, textvariable=self.watch_count_var).grid(row=3, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="监测结束").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.end_datetime_var, width=22).grid(row=3, column=1, sticky="w", pady=5)
+        ttk.Button(form, text="今天全天", command=self.set_today_window).grid(row=3, column=2, sticky="w", padx=(10, 0))
 
-        ttk.Label(form, text="指定作品补漏").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Entry(form, textvariable=self.supplemental_var).grid(row=4, column=1, sticky="ew", pady=5)
-        ttk.Label(form, text="粘贴作品链接或ID，多个用空格分隔").grid(row=4, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="监测范围").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Combobox(form, textvariable=self.mode_var, values=list(MODE_LABELS), state="readonly").grid(row=4, column=1, sticky="ew", pady=5)
+        ttk.Button(form, text="编辑重点账号", command=self.open_watchlist).grid(row=4, column=2, sticky="w", padx=(10, 0))
 
-        ttk.Label(form, text="报表目录").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Entry(form, textvariable=self.output_var).grid(row=5, column=1, sticky="ew", pady=5)
-        ttk.Button(form, text="选择目录", command=self.choose_output_dir).grid(row=5, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(form, text="关键词规则").grid(row=5, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Combobox(form, textvariable=self.match_var, values=list(MATCH_LABELS), state="readonly").grid(row=5, column=1, sticky="ew", pady=5)
+        ttk.Label(form, textvariable=self.watch_count_var).grid(row=5, column=2, sticky="w", padx=(10, 0))
+
+        ttk.Label(form, text="指定作品补漏").grid(row=6, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.supplemental_var).grid(row=6, column=1, sticky="ew", pady=5)
+        ttk.Label(form, text="粘贴作品链接或ID，多个用空格分隔").grid(row=6, column=2, sticky="w", padx=(10, 0))
+
+        ttk.Label(form, text="报表目录").grid(row=7, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(form, textvariable=self.output_var).grid(row=7, column=1, sticky="ew", pady=5)
+        ttk.Button(form, text="选择目录", command=self.choose_output_dir).grid(row=7, column=2, sticky="w", padx=(10, 0))
 
         options = ttk.Frame(form)
-        options.grid(row=6, column=1, columnspan=2, sticky="w", pady=(7, 2))
+        options.grid(row=8, column=1, columnspan=2, sticky="w", pady=(7, 2))
         ttk.Checkbutton(options, text="画面文字识别（OCR）", variable=self.ocr_var).grid(row=0, column=0, sticky="w", padx=(0, 18))
         ttk.Checkbutton(options, text="视频语音转文字（首次下载本地模型）", variable=self.speech_var).grid(row=0, column=1, sticky="w", padx=(0, 18))
         ttk.Checkbutton(options, text="抓取评论", variable=self.comments_var).grid(row=1, column=0, sticky="w", padx=(0, 18), pady=(5, 0))
         ttk.Checkbutton(options, text="包含二级回复", variable=self.replies_var).grid(row=1, column=1, sticky="w", pady=(5, 0))
 
         schedule = ttk.Frame(form)
-        schedule.grid(row=7, column=1, columnspan=2, sticky="w", pady=(8, 2))
+        schedule.grid(row=9, column=1, columnspan=2, sticky="w", pady=(8, 2))
         ttk.Checkbutton(schedule, text="每日自动运行", variable=self.schedule_var).pack(side="left")
         ttk.Label(schedule, text="时间").pack(side="left", padx=(14, 5))
         ttk.Entry(schedule, textvariable=self.schedule_time_var, width=8).pack(side="left")
@@ -682,6 +751,11 @@ class OpinionMonitorApp:
         if chosen:
             self.output_var.set(chosen)
 
+    def set_today_window(self) -> None:
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.start_datetime_var.set(f"{today} 00:00")
+        self.end_datetime_var.set(f"{today} 23:59")
+
     def open_watchlist(self) -> None:
         subprocess.Popen(["notepad.exe", str(self.paths["watchlist"])])
         self.root.after(1000, self.refresh_watch_count)
@@ -736,10 +810,18 @@ class OpinionMonitorApp:
 
     def _collect_settings(self) -> tuple[dict[str, Any], list[str]]:
         keywords = normalize_keywords(self.keywords_var.get())
-        if not keywords:
-            raise ValueError("请输入至少一个关键词。")
-        opinion_date = self.date_var.get().strip()
-        datetime.strptime(opinion_date, "%Y-%m-%d")
+        locations = normalize_keywords(self.locations_var.get())
+        if not keywords and not locations:
+            raise ValueError("请至少输入一个关键词或关键定位。")
+        start_datetime_text = self.start_datetime_var.get().strip()
+        end_datetime_text = self.end_datetime_var.get().strip()
+        try:
+            start_datetime = datetime.strptime(start_datetime_text, "%Y-%m-%d %H:%M")
+            end_datetime = datetime.strptime(end_datetime_text, "%Y-%m-%d %H:%M")
+        except ValueError as exc:
+            raise ValueError("监测时间必须为 YYYY-MM-DD HH:MM。") from exc
+        if end_datetime < start_datetime:
+            raise ValueError("监测结束时间不能早于开始时间。")
         mode = MODE_LABELS[self.mode_var.get()]
         match = MATCH_LABELS[self.match_var.get()]
         supplemental_videos = normalize_video_entries(self.supplemental_var.get())
@@ -750,7 +832,10 @@ class OpinionMonitorApp:
         output_dir.mkdir(parents=True, exist_ok=True)
         settings = {
             "keywords": ",".join(keywords),
-            "opinion_date": opinion_date,
+            "locations": ",".join(locations),
+            "opinion_date": start_datetime.date().isoformat(),
+            "start_datetime": start_datetime_text,
+            "end_datetime": end_datetime_text,
             "mode": mode,
             "match": match,
             "supplemental_videos": "\n".join(supplemental_videos),

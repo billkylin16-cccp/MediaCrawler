@@ -91,8 +91,14 @@ class DouYinCrawler(AbstractCrawler):
             if config.CRAWLER_TYPE != "search":
                 raise ValueError("抖音舆情监测模式仅支持关键词搜索（--type search）")
             self.opinion_report = DouyinOpinionReport(
-                keywords=config.KEYWORDS.split(","),
+                keywords=(
+                    config.DOUYIN_OPINION_CONTENT_KEYWORDS
+                    or config.KEYWORDS.split(",")
+                ),
                 target_date=config.DOUYIN_OPINION_REPORT_DATE,
+                locations=config.DOUYIN_OPINION_LOCATIONS,
+                start_datetime=config.DOUYIN_OPINION_START_DATETIME or None,
+                end_datetime=config.DOUYIN_OPINION_END_DATETIME or None,
                 output_path=config.DOUYIN_OPINION_REPORT_OUTPUT or None,
                 match=config.DOUYIN_OPINION_MATCH,
                 history_path=config.DOUYIN_OPINION_HISTORY_DB or None,
@@ -239,6 +245,9 @@ class DouYinCrawler(AbstractCrawler):
             config.CRAWLER_MAX_NOTES_COUNT = dy_limit_count
         start_page = config.START_PAGE  # start page number
         for keyword in config.KEYWORDS.split(","):
+            keyword = keyword.strip()
+            if not keyword:
+                continue
             source_keyword_var.set(keyword)
             utils.logger.info(f"[DouYinCrawler.search] Current keyword: {keyword}")
             aweme_list: List[str] = []
@@ -282,9 +291,14 @@ class DouYinCrawler(AbstractCrawler):
                     aweme_id = aweme_info.get("aweme_id", "")
                     aweme_list.append(aweme_id)
                     if self.opinion_report:
+                        discovery_source = (
+                            "关键定位搜索"
+                            if keyword in config.DOUYIN_OPINION_LOCATIONS
+                            else "关键词搜索"
+                        )
                         if await self.process_opinion_aweme(
                             aweme_info,
-                            discovery_source="关键词搜索",
+                            discovery_source=discovery_source,
                         ):
                             page_aweme_list.append(aweme_id)
                     else:
@@ -398,11 +412,20 @@ class DouYinCrawler(AbstractCrawler):
         aweme_id = str(aweme_info.get("aweme_id") or "").strip()
         if not aweme_id or aweme_id in self._processed_opinion_awemes:
             return False
-        self._processed_opinion_awemes.add(aweme_id)
-        if not self.opinion_report.is_target_date(aweme_info):
+        if not self.opinion_report.is_target_time(aweme_info):
             return False
 
         detail = aweme_info
+        if (
+            self.opinion_report.locations
+            and discovery_source == "关键定位搜索"
+            and not self.opinion_report._matched_locations(
+                " ".join(str(value) for value in aweme_info.values())
+            )
+        ):
+            fetched_detail = await self.fetch_opinion_aweme_detail(aweme_id)
+            if fetched_detail:
+                detail = fetched_detail
         image_urls = extract_note_image_list(detail)
         is_image_post = bool(image_urls) or str(detail.get("aweme_type")) == "68"
         if self.image_ocr and is_image_post and not image_urls:
@@ -488,12 +511,15 @@ class DouYinCrawler(AbstractCrawler):
                         f"continuing without it: {exc}"
                     )
 
-        return self.opinion_report.add_video(
+        selected = self.opinion_report.add_video(
             detail,
             ocr_pages=ocr_pages,
             watch_account=watch_account,
             discovery_source=discovery_source,
         )
+        if selected:
+            self._processed_opinion_awemes.add(aweme_id)
+        return selected
 
     async def fetch_opinion_aweme_detail(self, aweme_id: str) -> Dict:
         """Load details through the API, then fall back to the real browser page."""
@@ -729,11 +755,14 @@ class DouYinCrawler(AbstractCrawler):
                             f"[DouYinCrawler] Watch-account work: "
                             f"account={account_label}, aweme_id={aweme_info.get('aweme_id')}"
                         )
-                        publish_date = self.opinion_report.publish_date(aweme_info)
-                        if publish_date and publish_date < self.opinion_report.target_date:
+                        publish_datetime = self.opinion_report.publish_datetime(aweme_info)
+                        if (
+                            publish_datetime
+                            and publish_datetime < self.opinion_report.start_datetime
+                        ):
                             stop_on_older_post = True
                             break
-                        if publish_date != self.opinion_report.target_date:
+                        if not self.opinion_report.is_target_time(aweme_info):
                             continue
                         if await self.process_opinion_aweme(
                             aweme_info,

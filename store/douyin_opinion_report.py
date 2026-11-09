@@ -45,6 +45,9 @@ class VideoRecord:
     created_at: datetime
     keywords: tuple[str, ...]
     description_keywords: tuple[str, ...]
+    locations: tuple[str, ...]
+    metadata_locations: tuple[str, ...]
+    location_evidence: tuple[str, ...]
     ocr_pages: tuple[OcrPageResult, ...]
     watch_account: str
     discovery_source: str
@@ -83,6 +86,73 @@ def _parse_target_date(value: str | date | None) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError("舆情日期必须为 YYYY-MM-DD，例如 2026-08-24") from exc
+
+
+def _parse_window_datetime(value: str | datetime, field_name: str) -> datetime:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=CHINA_TZ) if value.tzinfo is None else value.astimezone(CHINA_TZ)
+    text = str(value or "").strip()
+    for pattern in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, pattern).replace(tzinfo=CHINA_TZ)
+        except ValueError:
+            continue
+    raise ValueError(f"{field_name}必须为 YYYY-MM-DD HH:MM，例如 2026-08-24 08:30")
+
+
+def _flatten_location_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        cleaned = _clean(value)
+        return [cleaned] if cleaned else []
+    if isinstance(value, dict):
+        result: list[str] = []
+        location_keys = {
+            "name", "title", "text", "poi_name", "poi_address", "address",
+            "address_info", "province", "city", "district", "town", "village",
+            "location", "location_name", "ip_attribution", "ip_location",
+        }
+        for key, nested in value.items():
+            if str(key).casefold() in location_keys:
+                result.extend(_flatten_location_values(nested))
+            elif isinstance(nested, (dict, list, tuple)):
+                result.extend(_flatten_location_values(nested))
+        return result
+    if isinstance(value, (list, tuple)):
+        result = []
+        for nested in value:
+            result.extend(_flatten_location_values(nested))
+        return result
+    return []
+
+
+def extract_location_evidence(aweme: Dict[str, Any]) -> tuple[str, ...]:
+    """Return public POI/address/IP-location strings from heterogeneous Douyin payloads."""
+
+    container_labels = {
+        "poi_info": "POI",
+        "poi_struct": "POI",
+        "address_info": "地址",
+        "location": "定位",
+        "anchor_info": "地点锚点",
+    }
+    direct_labels = {
+        "poi_name": "POI",
+        "poi_address": "POI地址",
+        "address": "地址",
+        "province": "省",
+        "city": "市",
+        "district": "区县",
+        "ip_attribution": "IP属地",
+        "ip_location": "IP属地",
+    }
+    evidence: list[str] = []
+    for key, label in container_labels.items():
+        for value in _flatten_location_values(aweme.get(key)):
+            evidence.append(f"{label}：{value}")
+    for key, label in direct_labels.items():
+        for value in _flatten_location_values(aweme.get(key)):
+            evidence.append(f"{label}：{value}")
+    return tuple(dict.fromkeys(evidence))
 
 
 def _to_china_datetime(value: Any) -> Optional[datetime]:
@@ -131,6 +201,9 @@ class DouyinOpinionReport:
         self,
         keywords: Iterable[str],
         target_date: str | date | None = None,
+        locations: Iterable[str] = (),
+        start_datetime: str | datetime | None = None,
+        end_datetime: str | datetime | None = None,
         output_path: str | Path | None = None,
         match: str = "all",
         history_path: str | Path | None = None,
@@ -138,11 +211,27 @@ class DouyinOpinionReport:
         dashboard_path: str | Path | None = None,
     ) -> None:
         self.keywords = tuple(item.strip() for item in keywords if item and item.strip())
-        if not self.keywords:
-            raise ValueError("舆情监测至少需要一个关键词")
+        self.locations = tuple(item.strip() for item in locations if item and item.strip())
+        if not self.keywords and not self.locations:
+            raise ValueError("舆情监测至少需要一个关键词或关键定位")
         if match not in {"all", "any"}:
             raise ValueError("关键词匹配规则只能是 all 或 any")
-        self.target_date = _parse_target_date(target_date)
+        if start_datetime is None and end_datetime is None:
+            self.target_date = _parse_target_date(target_date)
+            self.start_datetime = datetime.combine(
+                self.target_date, datetime.min.time(), tzinfo=CHINA_TZ
+            )
+            self.end_datetime = datetime.combine(
+                self.target_date, datetime.max.time(), tzinfo=CHINA_TZ
+            )
+        elif start_datetime is not None and end_datetime is not None:
+            self.start_datetime = _parse_window_datetime(start_datetime, "监测开始时间")
+            self.end_datetime = _parse_window_datetime(end_datetime, "监测结束时间")
+            if self.end_datetime < self.start_datetime:
+                raise ValueError("监测结束时间不能早于开始时间")
+            self.target_date = self.start_datetime.date()
+        else:
+            raise ValueError("监测开始时间和结束时间必须同时填写")
         self.match = match
         default_name = f"{self.target_date.month}.{self.target_date.day:02d}抖音舆论检测.xlsx"
         self.output_path = Path(output_path) if output_path else Path(default_name)
@@ -168,8 +257,20 @@ class DouyinOpinionReport:
     def _matches(self, hit: tuple[str, ...]) -> bool:
         return len(hit) == len(self.keywords) if self.match == "all" else bool(hit)
 
+    def _matched_locations(self, text: str) -> tuple[str, ...]:
+        folded_text = text.casefold()
+        return tuple(location for location in self.locations if location.casefold() in folded_text)
+
+    def is_target_time(self, aweme: Dict[str, Any]) -> bool:
+        created_at = self.publish_datetime(aweme)
+        return bool(created_at and self.start_datetime <= created_at <= self.end_datetime)
+
     def is_target_date(self, aweme: Dict[str, Any]) -> bool:
-        return self.publish_date(aweme) == self.target_date
+        return self.is_target_time(aweme)
+
+    @staticmethod
+    def publish_datetime(aweme: Dict[str, Any]) -> Optional[datetime]:
+        return _to_china_datetime(aweme.get("create_time"))
 
     @staticmethod
     def publish_date(aweme: Dict[str, Any]) -> Optional[date]:
@@ -206,7 +307,17 @@ class DouyinOpinionReport:
         description_hits = self._matched_keywords(content)
         combined_text = " ".join([content, *(page.text for page in normalized_ocr_pages)])
         hits = self._matched_keywords(combined_text)
-        if not created_at or created_at.date() != self.target_date or not self._matches(hits):
+        location_evidence = extract_location_evidence(aweme)
+        metadata_location_hits = self._matched_locations(" ".join(location_evidence))
+        content_location_hits = self._matched_locations(combined_text)
+        location_hits = tuple(dict.fromkeys((*metadata_location_hits, *content_location_hits)))
+        keyword_match = bool(self.keywords) and self._matches(hits)
+        location_match = bool(location_hits)
+        if (
+            not created_at
+            or not (self.start_datetime <= created_at <= self.end_datetime)
+            or not (keyword_match or location_match)
+        ):
             return False
         if self._deduplicate and f"video:{aweme_id}" in self._seen_keys:
             self.duplicate_count += 1
@@ -220,6 +331,9 @@ class DouyinOpinionReport:
             created_at=created_at,
             keywords=hits,
             description_keywords=description_hits,
+            locations=location_hits,
+            metadata_locations=metadata_location_hits,
+            location_evidence=location_evidence,
             ocr_pages=normalized_ocr_pages,
             watch_account=_excel_safe_text(watch_account),
             discovery_source=_excel_safe_text(discovery_source),
@@ -239,7 +353,7 @@ class DouyinOpinionReport:
                 self.duplicate_count += 1
                 continue
             created_at = _to_china_datetime(comment.get("create_time"))
-            if not created_at or created_at.date() != self.target_date:
+            if not created_at or not (self.start_datetime <= created_at <= self.end_datetime):
                 continue
             user = comment.get("user") or {}
             content = _clean(comment.get("text"))
@@ -272,7 +386,7 @@ class DouyinOpinionReport:
 
         for video in videos:
             analysis = self._analysis.get(video.aweme_id)
-            matched = "、".join(video.keywords) or "搜索命中"
+            matched = "、".join(video.keywords) or "未命中（由关键定位收录）"
             source_parts: list[str] = []
             if video.description_keywords:
                 source_parts.append("作品描述")
@@ -301,6 +415,10 @@ class DouyinOpinionReport:
             ]
             if speech_hits:
                 source_parts.append("视频语音识别")
+            if video.metadata_locations:
+                source_parts.append("作品定位信息")
+            elif video.locations:
+                source_parts.append("内容地点文字")
             if not source_parts:
                 source_parts.append("搜索命中")
 
@@ -328,9 +446,13 @@ class DouyinOpinionReport:
             info_parts = [
                 "视频",
                 f"发布时间：{self._time_text(video.created_at)}",
-                f"匹配：{matched}",
+                f"关键词匹配：{matched}",
                 f"命中来源：{'、'.join(source_parts)}",
             ]
+            if video.locations:
+                info_parts.append(f"关键定位：{'、'.join(video.locations)}")
+            if video.location_evidence:
+                info_parts.append(f"作品定位：{'；'.join(video.location_evidence)}")
             if video.discovery_source:
                 info_parts.append(f"发现方式：{video.discovery_source}")
             if video.watch_account:
@@ -379,7 +501,9 @@ class DouyinOpinionReport:
                     "watch_account": video.watch_account,
                 }
             )
-        self._analysis = OpinionAnalyzer(self.keywords).analyze(videos, comments_by_video)
+        self._analysis = OpinionAnalyzer((*self.keywords, *self.locations)).analyze(
+            videos, comments_by_video
+        )
 
     def _write_analysis_sheets(self, workbook: Workbook) -> None:
         event_sheet = workbook.create_sheet("事件分析")
@@ -418,8 +542,10 @@ class DouyinOpinionReport:
         for result in self._analysis.values():
             risk_counts[result.risk_level] += 1
         summary_rows = [
-            ("监测日期", self.target_date.isoformat()),
+            ("监测开始", self.start_datetime.strftime("%Y-%m-%d %H:%M")),
+            ("监测结束", self.end_datetime.strftime("%Y-%m-%d %H:%M")),
             ("关键词", "、".join(self.keywords)),
+            ("关键定位", "、".join(self.locations)),
             ("新增视频", len(self._videos)),
             ("新增评论", len(self._comments)),
             ("跨日期重复项", self.duplicate_count),
@@ -458,7 +584,13 @@ class DouyinOpinionReport:
                     "event_id": analysis.event_id,
                     "summary": analysis.summary,
                     "url": video.url,
-                    "payload": {"risk_reasons": list(analysis.risk_reasons)},
+                    "payload": {
+                        "risk_reasons": list(analysis.risk_reasons),
+                        "locations": list(video.locations),
+                        "location_evidence": list(video.location_evidence),
+                        "window_start": self.start_datetime.isoformat(),
+                        "window_end": self.end_datetime.isoformat(),
+                    },
                 }
             )
             for comment in comments_by_video.get(video.aweme_id, []):
@@ -492,7 +624,13 @@ class DouyinOpinionReport:
         worksheet.title = "舆论监测"
         worksheet.sheet_view.showGridLines = False
 
-        title = f"{self.target_date.month}.{self.target_date.day:02d}抖音舆论检测"
+        if self.start_datetime.date() == self.end_datetime.date():
+            title = f"{self.target_date.month}.{self.target_date.day:02d}抖音舆论检测"
+        else:
+            title = (
+                f"{self.start_datetime.month}.{self.start_datetime.day:02d}-"
+                f"{self.end_datetime.month}.{self.end_datetime.day:02d}抖音舆论检测"
+            )
         worksheet.merge_cells("A1:D1")
         worksheet["A1"] = title
         worksheet["A1"].font = Font(name="Microsoft YaHei", bold=True, size=14, color="FFFFFF")

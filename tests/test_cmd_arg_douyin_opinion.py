@@ -15,6 +15,10 @@ async def test_douyin_opinion_cli_sets_report_config():
         "KEYWORDS": config.KEYWORDS,
         "ENABLE_DOUYIN_OPINION_REPORT": config.ENABLE_DOUYIN_OPINION_REPORT,
         "DOUYIN_OPINION_REPORT_DATE": config.DOUYIN_OPINION_REPORT_DATE,
+        "DOUYIN_OPINION_START_DATETIME": config.DOUYIN_OPINION_START_DATETIME,
+        "DOUYIN_OPINION_END_DATETIME": config.DOUYIN_OPINION_END_DATETIME,
+        "DOUYIN_OPINION_CONTENT_KEYWORDS": config.DOUYIN_OPINION_CONTENT_KEYWORDS,
+        "DOUYIN_OPINION_LOCATIONS": config.DOUYIN_OPINION_LOCATIONS,
         "DOUYIN_OPINION_REPORT_OUTPUT": config.DOUYIN_OPINION_REPORT_OUTPUT,
         "DOUYIN_OPINION_MATCH": config.DOUYIN_OPINION_MATCH,
         "DOUYIN_OPINION_WATCH_ACCOUNTS": config.DOUYIN_OPINION_WATCH_ACCOUNTS,
@@ -30,6 +34,9 @@ async def test_douyin_opinion_cli_sets_report_config():
             "--keywords", "武陟,西陶",
             "--douyin_opinion_report", "yes",
             "--opinion_date", "2026-08-24",
+            "--opinion_start_datetime", "2026-08-24 09:15",
+            "--opinion_end_datetime", "2026-08-24 17:45",
+            "--opinion_locations", "西陶镇,西陶村",
             "--opinion_output", "8.24抖音舆论检测.xlsx",
             "--opinion_match", "any",
             "--opinion_watch_accounts", "xuhaoran888,29811185454",
@@ -41,8 +48,12 @@ async def test_douyin_opinion_cli_sets_report_config():
 
         assert result.douyin_opinion_report is True
         assert result.opinion_match == "any"
-        assert config.KEYWORDS == "武陟,西陶"
+        assert config.KEYWORDS == "武陟,西陶,西陶镇,西陶村"
+        assert config.DOUYIN_OPINION_CONTENT_KEYWORDS == ["武陟", "西陶"]
+        assert config.DOUYIN_OPINION_LOCATIONS == ["西陶镇", "西陶村"]
         assert config.DOUYIN_OPINION_REPORT_DATE == "2026-08-24"
+        assert config.DOUYIN_OPINION_START_DATETIME == "2026-08-24 09:15"
+        assert config.DOUYIN_OPINION_END_DATETIME == "2026-08-24 17:45"
         assert config.DOUYIN_OPINION_REPORT_OUTPUT == "8.24抖音舆论检测.xlsx"
         assert config.DOUYIN_OPINION_WATCH_ACCOUNTS == ["xuhaoran888", "29811185454"]
         assert config.DOUYIN_OPINION_SUPPLEMENTAL_VIDEOS == [

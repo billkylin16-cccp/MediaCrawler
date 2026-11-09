@@ -37,10 +37,11 @@ def write_dashboard(history_path: str | Path, output_path: str | Path) -> Path:
         "<tr>"
         f"<td>{_escape(row['report_date'])}</td><td>{_escape(row['event_id'])}</td>"
         f"<td><span class='badge risk-{_escape(row['risk_level'])}'>{_escape(row['risk_level'])}</span></td>"
-        f"<td>{_escape(row['account'])}</td><td>{_escape(row['summary'] or row['content'])}</td>"
+        f"<td>{_escape(row['account'])}</td><td>{_escape(row.get('location'))}</td>"
+        f"<td>{_escape(row['summary'] or row['content'])}</td>"
         f"<td><a href='{_escape(row['url'])}' target='_blank'>查看</a></td></tr>"
         for row in payload["recent"]
-    ) or "<tr><td colspan='6' class='muted'>暂无数据</td></tr>"
+    ) or "<tr><td colspan='7' class='muted'>暂无数据</td></tr>"
     run_rows = "".join(
         "<tr>"
         f"<td>{_escape(row['target_date'])}</td><td>{_escape(row['state'])}</td>"
@@ -61,9 +62,8 @@ table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1p
 .badge{{color:white;border-radius:10px;padding:2px 8px}}.risk-高{{background:#d64545}}.risk-中{{background:#e49b22}}.risk-低{{background:#2e9b63}}a{{color:#1d63a9}}
 </style></head><body><main><h1>抖音舆情本地数据看板</h1><p class='muted'>更新时间：{datetime.now():%Y-%m-%d %H:%M:%S} · 数据仅保存在本机</p>
 <div class='cards'>{cards}</div><section><h2>近30日监测趋势</h2>{bars}</section>
-<section><h2>最近舆情</h2><table><thead><tr><th>日期</th><th>事件</th><th>风险</th><th>账号</th><th>摘要</th><th>原文</th></tr></thead><tbody>{recent_rows}</tbody></table></section>
+<section><h2>最近舆情</h2><table><thead><tr><th>日期</th><th>事件</th><th>风险</th><th>账号</th><th>关键定位</th><th>摘要</th><th>原文</th></tr></thead><tbody>{recent_rows}</tbody></table></section>
 <section><h2>任务运行记录</h2><table><thead><tr><th>日期</th><th>状态</th><th>尝试</th><th>开始时间</th><th>错误</th></tr></thead><tbody>{run_rows}</tbody></table></section>
 </main></body></html>"""
     output.write_text(document, encoding="utf-8")
     return output
-

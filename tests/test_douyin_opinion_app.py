@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from douyin_opinion_app import (
+    create_job,
+    load_settings,
     next_report_path,
     normalize_keywords,
     normalize_video_entries,
@@ -54,3 +56,38 @@ def test_runtime_paths_honor_writable_data_environment(monkeypatch, tmp_path: Pa
 
 def test_safe_file_component_removes_windows_path_characters():
     assert safe_file_component('西陶:*?"<>|') == "西陶"
+
+
+def test_legacy_settings_migrate_to_editable_location_and_full_day(tmp_path: Path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        '{"keywords":"民生","opinion_date":"2026-08-31"}', encoding="utf-8"
+    )
+    settings = load_settings(settings_path)
+    assert settings["locations"] == "西陶"
+    assert settings["start_datetime"] == "2026-08-31 00:00"
+    assert settings["end_datetime"] == "2026-08-31 23:59"
+
+
+def test_create_job_keeps_custom_time_and_location(tmp_path: Path):
+    paths = {
+        "jobs": tmp_path / "jobs",
+        "logs": tmp_path / "logs",
+        "history": tmp_path / "history.db",
+        "dashboard": tmp_path / "dashboard.html",
+    }
+    paths["jobs"].mkdir()
+    paths["logs"].mkdir()
+    settings = {
+        "keywords": "民生",
+        "locations": "西陶,西陶镇",
+        "opinion_date": "2026-08-31",
+        "start_datetime": "2026-08-31 09:15",
+        "end_datetime": "2026-08-31 17:45",
+        "output_dir": str(tmp_path),
+    }
+    _job_path, job = create_job(settings, [], paths)
+    assert job["keywords"] == ["民生"]
+    assert job["locations"] == ["西陶", "西陶镇"]
+    assert job["start_datetime"] == "2026-08-31 09:15"
+    assert job["end_datetime"] == "2026-08-31 17:45"

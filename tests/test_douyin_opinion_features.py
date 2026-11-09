@@ -125,6 +125,71 @@ async def test_audio_transcript_matches_keyword_and_creates_high_risk_analysis(t
     workbook.close()
 
 
+def test_location_metadata_is_included_without_keyword_match(tmp_path: Path):
+    output = tmp_path / "location.xlsx"
+    report = DouyinOpinionReport(
+        keywords=["民生"],
+        locations=["西陶"],
+        start_datetime="2026-08-24 00:00",
+        end_datetime="2026-08-24 23:59",
+        output_path=output,
+    )
+    assert report.add_video(
+        {
+            "aweme_id": "located-video",
+            "desc": "今日随手拍",
+            "create_time": _ts(),
+            "author": {"nickname": "定位发布人"},
+            "poi_info": {
+                "poi_name": "西陶镇文化广场",
+                "address_info": "武陟县西陶镇",
+            },
+        }
+    )
+    report.flush()
+    workbook = load_workbook(output, data_only=True)
+    info = workbook["舆论监测"]["D3"].value
+    assert "关键定位：西陶" in info
+    assert "作品定位信息" in info
+    assert "西陶镇文化广场" in info
+    workbook.close()
+
+
+@pytest.mark.asyncio
+async def test_custom_datetime_window_filters_videos_and_comments(tmp_path: Path):
+    report = DouyinOpinionReport(
+        keywords=["西陶"],
+        start_datetime="2026-08-24 11:30",
+        end_datetime="2026-08-24 13:00",
+        output_path=tmp_path / "window.xlsx",
+    )
+    assert not report.add_video(
+        {
+            "aweme_id": "too-early",
+            "desc": "西陶早间内容",
+            "create_time": _ts(3),  # 11:00 China time
+            "author": {"nickname": "早间发布人"},
+        }
+    )
+    assert report.add_video(
+        {
+            "aweme_id": "in-window",
+            "desc": "西陶中午内容",
+            "create_time": _ts(4),  # 12:00 China time
+            "author": {"nickname": "中午发布人"},
+        }
+    )
+    await report.add_comments(
+        "in-window",
+        [
+            {"cid": "inside", "text": "时间内评论", "create_time": _ts(4), "user": {}},
+            {"cid": "outside", "text": "时间外评论", "create_time": _ts(6), "user": {}},
+        ],
+    )
+    assert report.video_count == 1
+    assert report.comment_count == 1
+
+
 def test_local_event_analysis_merges_similar_content():
     analyzer = OpinionAnalyzer(["西陶"])
     results = analyzer.analyze(
