@@ -6,7 +6,7 @@ on:
       version:
         description: Installer version
         required: true
-        default: 0.3.0-beta.1
+        default: 0.3.0-beta.2
   push:
     tags:
       - "v*"
@@ -68,8 +68,21 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v$env:RELEASE_VERSION" }
+          $previousErrorActionPreference = $ErrorActionPreference
+          $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+          $ErrorActionPreference = "Continue"
+          $PSNativeCommandUseErrorActionPreference = $false
           gh release view $tag *> $null
-          if ($LASTEXITCODE -ne 0) {
+          $releaseExists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = $previousErrorActionPreference
+          $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+          if (-not $releaseExists) {
             gh release create $tag --target $env:GITHUB_SHA --generate-notes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create GitHub release $tag"
+            }
           }
           gh release upload $tag packaging/output/*.exe packaging/output/*.sha256 --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload release assets for $tag"
+          }

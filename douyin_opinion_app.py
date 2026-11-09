@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 APP_NAME = "抖音舆情监测"
 APP_ID = "DouyinOpinionMonitor"
-APP_VERSION = "0.3.0-beta.1"
+APP_VERSION = "0.3.0-beta.2"
 LICENSE_ACCEPTED_VERSION = "1.1"
 SCHEDULE_TASK_NAME = "DouyinOpinionMonitor每日监测"
 
